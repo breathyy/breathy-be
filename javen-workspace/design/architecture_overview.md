@@ -3,9 +3,9 @@
 Backend menggunakan Node.js/Express dengan PostgreSQL, Azure Blob Storage, Azure Communication Services (WhatsApp), Azure Cognitive Services Vision, dan Azure AI Text Analytics. Orkestrasi dilakukan langsung di proses backend menggunakan pemanggilan async, tanpa message broker. State machine kasus: IN_CHATBOT → WAITING_DOCTOR → MILD/MODERATE/SEVERE; severity_class adalah hasil triage.
 
 Komponen utama
-- API/Express: routes untuk chat webhook, kasus, dokter/RS, tugas harian, auth
+- API/Express: routes untuk chat webhook, kasus, dokter/RS, tugas harian, auth, media (SAS upload/list)
 - PostgreSQL: users, doctor_users, hospital_users, hospitals, cases, images, symptoms, daily_tasks, referrals, chat_messages, otp_codes
-- Blob pipeline: upload ke Blob, QC, SAS URL, inferensi Vision
+- Blob pipeline: upload ke Blob, QC, SAS URL jangka pendek, inferensi Vision, finalisasi metadata di tabel `images`
 - NLU & Vision: hitung S_s dan S_i, gabungkan menjadi S
 - Observabilitas: Application Insights (opsional)
 - Keamanan: JWT/RBAC, sanitasi PII, Key Vault untuk secrets (opsional)
@@ -40,8 +40,9 @@ await db.connect()
 ```
 
 Alur data
-- Inbound WhatsApp via ACS → webhook Express → simpan chat, buat/temukan case
-- Gambar diunduh via ACS media URL → upload ke Blob → QC → Vision → simpan markers, S_i
+- Inbound WhatsApp via ACS -> webhook Express -> simpan chat, buat/temukan case
+- Unggahan manual via dashboard/pasien -> POST /cases/:id/images/upload-url (SAS PUT) -> klien unggah langsung -> POST /cases/:id/images finalisasi metadata, QC -> Vision -> simpan markers, S_i
+- Gambar diunduh via ACS media URL -> upload ke Blob -> QC -> Vision -> simpan markers, S_i (alur sinkron)
 - Teks gejala → Text Analytics → entitas terstruktur → S_s
 - Ensemble triage S = α·S_i + (1−α)·S_s → set severity_score, severity_class → tunggu review dokter
 - Approval dokter → generate tugas harian 7 hari untuk MILD/MODERATE → rujukan jika SEVERE

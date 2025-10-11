@@ -85,7 +85,8 @@ Tujuan: Menyimpan media (foto WA) dan mengeluarkan URL (SAS) untuk inference.
 
 - Provision Azure Storage Account dan buat container (mis. `breathy-images`).
 - Buat peran akses (RBAC) minimal untuk upload dari backend. Untuk dev, gunakan connection string; untuk prod, gunakan Managed Identity.
-- Implementasi `azure.js` (wrapper Storage) dan `visionService` agar dapat: upload file, membuat SAS URL, menyimpan metadata di tabel `images`.
+- Implementasi `blob.service.js` (wrapper Storage) dan `vision.service.js` agar dapat: generate SAS PUT/GET, upload file, menyimpan metadata di tabel `images`.
+- Tambahkan endpoint: `POST /cases/:caseId/images/upload-url`, `POST /cases/:caseId/images`, `GET /cases/:caseId/images` dengan guard ukuran/tipe file.
 - Buat utilitas QC (quality metrics placeholder) dan simpan ke kolom `quality_metrics` saat upload (meski metrik awal kosong, arsitektur siap).
 
 Output verifikasi:

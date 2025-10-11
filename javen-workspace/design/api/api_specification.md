@@ -11,6 +11,10 @@ Area utama:
 	- GET /me — header Authorization: Bearer <token> → profil + role.
 - Chat Webhook (ACS WhatsApp):
 	- POST /chat/incoming — payload ACS; bedakan text vs media; kaitkan ke case; proses langsung: teks → nluService, media → blobService+visionService
+- Media (Upload Gambar Sputum):
+	- POST /cases/:caseId/images/upload-url — auth pasien/dokter; body: { contentType, fileSizeBytes } → respon { sasUrl, blobName, expiresAt } untuk direct PUT ke Blob.
+	- POST /cases/:caseId/images — body: { blobName, source: "ACS"|"MANUAL", qualityMetrics?, notes? } → jalankan QC, panggil Vision async, simpan record images beserta S_i jika tersedia.
+	- GET /cases/:caseId/images — query optional: includeVision=true — kembalikan daftar media dengan SAS URL jangka pendek (backend generate per request) + metadata aman (tanpa SAS persist).
 - Cases:
 	- GET /cases/:id — detail kasus, termasuk severity_score/class, status, ringkasan gejala dan citra.
 	- POST /cases/:id/approve — body: { severity_adjustment?, notes? } — oleh DOCTOR; transisi WAITING_DOCTOR → (MILD|MODERATE|SEVERE).
