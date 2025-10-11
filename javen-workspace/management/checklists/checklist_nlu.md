@@ -4,12 +4,11 @@ Rujukan: [design/algorithms/followup_engine.md](../../design/algorithms/followup
 
 ## Tugas
 
-- [ ] Siapkan project Copilot Studio/LUIS: intent ISPA intake; entitas fever_status, onset_days, dyspnea, comorbidity, other_symptoms.
-- [ ] Buat environment variable COPILOT_ENDPOINT dan COPILOT_KEY.
-- [ ] Implementasi nluService: panggil API, normalisasi entitas ke skema symptoms, hitung S_s.
-- [ ] Tangani error dan retry (exponential backoff, circuit breaker minimal).
+- [ ] Instal `@azure/ai-text-analytics`; set `.env` AI_TEXT_ENDPOINT, AI_TEXT_KEY.
+- [ ] Implement nluService: panggil SDK, normalisasi entitas ke skema symptoms, hitung S_s.
+- [ ] Tangani error dan retry; logging latency dan error codes.
 - [ ] Simpan hasil ke DB: symptoms table terhubung ke case_id.
-- [ ] Logging observabilitas (latency, error codes) ke App Insights.
+- [ ] Terapkan aturan coding: tanpa komentar, camelCase, modul ringkas.
 
 ## Verifikasi
 

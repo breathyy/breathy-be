@@ -4,8 +4,9 @@ Rujukan: [design/architecture_overview.md](../../design/architecture_overview.md
 
 ## Tugas
 
-- [ ] Provision Azure Storage dan container media; set AZURE_STORAGE_CONNECTION_STRING.
-- [ ] Implementasikan upload media, buat SAS URL, simpan metadata ke tabel images.
+- [ ] Instal `@azure/storage-blob` dan `@azure/cognitiveservices-computervision`.
+- [ ] Set `.env` AZURE_STORAGE_CONNECTION_STRING, STORAGE_CONTAINER, AZURE_CV_ENDPOINT, AZURE_CV_KEY.
+- [ ] Implement upload media, SAS URL, simpan metadata ke tabel images melalui `blobService`.
 - [ ] QC dasar: blur, brightness, aspect ratio; minta unggah ulang jika tidak lolos.
 - [ ] Panggil Azure CV untuk deteksi marker: sputum hijau, bercak darah, viskositas, jernih.
 - [ ] Hitung S_i sesuai bobot; simpan skor & marker ke images.
@@ -16,8 +17,9 @@ Rujukan: [design/architecture_overview.md](../../design/architecture_overview.md
 - [ ] Unggah file dummy menghasilkan record images lengkap.
 - [ ] Hasil CV stabil pada sampel uji; thresholds terdokumentasi.
 - [ ] Unit test untuk QC dan scoring.
+- [ ] Terapkan aturan coding: tanpa komentar, camelCase, modul ringkas.
 
-## Catatan
+## Catatan`
 
 - ...
 

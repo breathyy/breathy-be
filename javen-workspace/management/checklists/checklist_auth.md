@@ -5,7 +5,7 @@ Rujukan: [../../design/api/api_specification.md](../../design/api/api_specificat
 ## Tugas
 
 - [ ] Pasien OTP via WhatsApp:
-  - [ ] Endpoint POST /auth/patient/otp/request (validasi nomor, rate limit, simpan hash+expiry ke otp_codes, kirim via ACS).
+  - [ ] Endpoint POST /auth/patient/otp/request (validasi nomor, rate limit, simpan hash+expiry ke otp_codes, kirim via ACS SDK/REST).
   - [ ] Endpoint POST /auth/patient/otp/verify (verifikasi; buat/temukan user; open case IN_CHATBOT).
   - [ ] Anti-abuse: attempt counter, lockout singkat, audit log.
 - [ ] Tenaga kesehatan (DOCTOR/HOSPITAL) JWT:
@@ -20,6 +20,7 @@ Rujukan: [../../design/api/api_specification.md](../../design/api/api_specificat
 
 - [ ] Uji OTP benar/salah/expired; uji rate limit.
 - [ ] Uji login JWT dan akses rute berbasis role.
+ - [ ] Terapkan aturan coding: tanpa komentar, camelCase, modul ringkas.
 
 ## Catatan
 

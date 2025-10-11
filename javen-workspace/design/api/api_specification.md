@@ -10,7 +10,7 @@ Area utama:
 	- POST /auth/login — body: { email, password, role: "DOCTOR"|"HOSPITAL" } → JWT.
 	- GET /me — header Authorization: Bearer <token> → profil + role.
 - Chat Webhook (ACS WhatsApp):
-	- POST /chat/incoming — payload ACS; bedakan text vs media; kaitkan ke case; publish untuk NLU/CV atau proses sinkron tergantung arsitektur.
+	- POST /chat/incoming — payload ACS; bedakan text vs media; kaitkan ke case; proses langsung: teks → nluService, media → blobService+visionService
 - Cases:
 	- GET /cases/:id — detail kasus, termasuk severity_score/class, status, ringkasan gejala dan citra.
 	- POST /cases/:id/approve — body: { severity_adjustment?, notes? } — oleh DOCTOR; transisi WAITING_DOCTOR → (MILD|MODERATE|SEVERE).
@@ -27,5 +27,15 @@ Area utama:
 	- GET /cases/:id/chat — histori chat ringkas (metadata + tautan media aman).
 
 Respon standar: { success, data, error }
+
+Contoh inisialisasi klien (pseudo‑code)
+```
+import { BlobServiceClient } from '@azure/storage-blob'
+import { TextAnalyticsClient, AzureKeyCredential } from '@azure/ai-text-analytics'
+import { ComputerVisionClient } from '@azure/cognitiveservices-computervision'
+const blob = BlobServiceClient.fromConnectionString(process.env.AZURE_STORAGE_CONNECTION_STRING)
+const ta = new TextAnalyticsClient(process.env.AI_TEXT_ENDPOINT, new AzureKeyCredential(process.env.AI_TEXT_KEY))
+const cv = new ComputerVisionClient({ endpoint: process.env.AZURE_CV_ENDPOINT }, { key: process.env.AZURE_CV_KEY })
+```
 
 Rujukan dokumen: [../architecture_overview.md](../architecture_overview.md)

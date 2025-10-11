@@ -100,7 +100,7 @@ Tujuan: Menerima dan mengirim pesan WA.
 
 - Provision Azure Communication Services (ACS). Aktifkan kanal WhatsApp (ikuti tahapan verifikasi Meta jika diperlukan; untuk sandbox gunakan nomor uji yang disediakan).
 - Konfigurasikan inbound webhook ACS mengarah ke endpoint backend (mis. `POST /chat/incoming`). Untuk dev, gunakan tunneling (ngrok/Dev Tunnels) agar endpoint lokal publik.
-- Implementasi `chatController` (mendeteksi teks vs media, mengekstrak metadata, menyimpan referensi ke `cases`, dan mem-publish ke antrian `ingest-queue` via messaging service).
+- Implementasi `chatController` (mendeteksi teks vs media, mengekstrak metadata, menyimpan referensi ke `cases`, dan memanggil service terkait secara langsung untuk pemrosesan). Jika memilih arsitektur dengan ASB, lihat bagian 7 untuk mem-publish ke `ingest-queue` via messaging service.
 - Implementasi outbound (opsional tahap ini): fungsi utilitas mengirim pesan teks ke user untuk konfirmasi OTP/follow-up.
 
 Output verifikasi:
@@ -158,8 +158,8 @@ Output verifikasi:
 Tujuan: Telemetri siap untuk E2E troubleshooting.
 
 - Provision Application Insights. Tambahkan SDK/telemetry ke app dan workers.
-- Log metrik: state_transition_duration, queue_length, ai_response_time, doctor_action_latency, error rate. Tambahkan correlation ID per case.
-- Buat alert standar (mis. backlog `ai-queue` > X, error ratio > Y).
+- Log metrik: state_transition_duration, ai_response_time, doctor_action_latency, error rate, dan queue_length (jika menggunakan ASB). Tambahkan correlation ID per case.
+- Buat alert standar (mis. error ratio > Y; jika menggunakan ASB, tambahkan alert backlog `ai-queue` > X).
 
 Output verifikasi:
 
@@ -188,7 +188,7 @@ Tujuan: Aplikasi berjalan di Azure App Service skala kecil dulu.
 - Tambahkan Dockerfile multi-stage untuk app (dan workers jika proses terpisah) atau gunakan PM2/Procfile.
 - Provision Azure Container Registry (ACR); build & push image.
 - Provision Azure App Service (Linux) untuk API; set App Settings (semua env var yang diperlukan). Untuk workers, gunakan App Service tambahan atau Azure Container Apps.
-- Hubungkan App Service ke Postgres/Storage/Service Bus dengan connection string di konfigurasi.
+- Hubungkan App Service ke Postgres/Storage (dan Service Bus bila dipakai) dengan connection string di konfigurasi.
 - Update webhook ACS agar mengarah ke domain App Service produksi/staging.
 
 Output verifikasi:
@@ -201,7 +201,7 @@ Output verifikasi:
 
 Tujuan: Mengeraskan konfigurasi produksi.
 
-- Provision Azure Key Vault dan pindahkan secrets (DB, ACS, CV, Service Bus, JWT). Gunakan Managed Identity untuk akses KV dari App Service.
+- Provision Azure Key Vault dan pindahkan secrets (DB, ACS, CV, JWT, dan Service Bus jika dipakai). Gunakan Managed Identity untuk akses KV dari App Service.
 - Atur firewall Postgres agar hanya menerima koneksi dari App Service/Private Endpoint.
 - Review kebijakan retensi log; aktifkan enkripsi di Storage dan pastikan SAS scopes ketat.
 - Implementasi audit logging untuk akses data sensitif (consent_logs, doctor_actions).
@@ -221,7 +221,7 @@ Tujuan: Memastikan jalur utama berfungsi dari WA hingga dokter.
 	2) User kirim foto sputum → upload → Vision → S_i → triage,
 	3) Kombinasi keduanya → notifikasi dokter → dokter review → rujukan/follow-up.
 - Verifikasi data di tabel terkait (cases, symptoms, images, doctor_actions, referrals) dan telemetri di App Insights.
-- Siapkan rollback sederhana (deploy image sebelumnya) dan rencana incident jika queue backlog menumpuk.
+- Siapkan rollback sederhana (deploy image sebelumnya) dan rencana incident jika backlog antrian (ASB) menumpuk.
 
 Output verifikasi:
 

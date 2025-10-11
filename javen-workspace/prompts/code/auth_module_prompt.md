@@ -2,7 +2,7 @@
 
 Rujukan: [../../design/api/api_specification.md](../../design/api/api_specification.md), [../../management/checklists/checklist_security.md](../../management/checklists/checklist_security.md), [../../management/checklists/checklist_auth.md](../../management/checklists/checklist_auth.md)
 
-Tujuan: Buat modul autentikasi lengkap: OTP pasien via WhatsApp (ACS) dan JWT untuk dokter/rumah sakit dengan hash password bcrypt, termasuk middleware otorisasi RBAC.
+Tujuan: Buat modul autentikasi lengkap: OTP pasien via WhatsApp (ACS SDK/REST) dan JWT untuk dokter/rumah sakit dengan hash password bcrypt, termasuk middleware otorisasi RBAC.
 
 Keluaran yang diharapkan:
 - routes/authRoutes.js:
@@ -15,7 +15,7 @@ Keluaran yang diharapkan:
 - models (jika ORM): users, otp_codes, doctor_users, hospital_users.
 
 Batasan:
-- Gunakan async/await; tangani error dengan next(err).
+- Gunakan async/await; tangani error dengan next(err). Tanpa komentar, camelCase, modul ringkas.
 - Tambahkan unit test minimal (OTP benar/salah/expired; login JWT; RBAC route guard).
 
 Catatan:

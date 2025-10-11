@@ -141,7 +141,7 @@ Selain per modul, buat file checklist_integration_flow.md atau sebuah folder int
 
 06_nlu_vision.md – tugas pengaturan Copilot Studio dan Computer Vision, implementasi nluService & visionService, serta uji inference.
 
-07_queue_pipeline.md – (jika arsitektur menggunakan Service Bus) tugas provisioning queue, menulis worker, memproses alur ingest → AI → notify. Jika arsitektur tanpa bus, tambahkan catatan adaptasi sesuai updated_design_no_bus.md.
+07_queue_pipeline.md – (jika arsitektur menggunakan Service Bus) tugas provisioning queue, menulis worker, memproses alur ingest → AI → notify. Jika arsitektur tanpa bus (default), ikuti adaptasi pada bagian tanpa-ASB di `overview_integration.md`.
 
 08_triage_engine.md – tugas implementasi triage engine & state machine, update cases.status.
 

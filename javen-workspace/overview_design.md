@@ -92,26 +92,25 @@ Dasbor menampilkan daftar kasus dengan filter (mild/moderate/severe), detail pas
 
 ### 4. Arsitektur Sistem & Integrasi Azure
 
-#### 4.1 Platform Azure
+#### 4.1 Platform Azure (default tanpa Service Bus)
 
-Breathy memanfaatkan beberapa layanan Azure yang dihubungkan melalui Azure Service Bus (ASB) sebagai message broker untuk memastikan skalabilitas:
+Breathy menggunakan layanan Azure melalui pemanggilan langsung dari backend tanpa message broker sebagai default:
 
-- Azure Communication Services (ACS) – menyediakan nomor WhatsApp bisnis; modul webhook di backend menerima incomingMessage (berisi teks, media URL) dan mempublikasikannya ke ASB.
-- Azure Service Bus – antrian ingest-queue untuk pesan masuk; antrian ai-queue untuk tugas AI; antrian notification-queue untuk notifikasi pengguna. Pembuatan batch dan pengiriman pesan menggunakan pustaka Node @azure/service-bus
-  learn.microsoft.com.
-- Azure App Service / Web App – host aplikasi Express.js. Menggunakan scale-out ke beberapa instance; setiap instance mendengarkan ASB dan memproses pesan.
-- Azure Blob Storage – menyimpan file gambar dan heatmap. Metadata disimpan di tabel images dengan blob_url, sas_token dan qc_scores.
-- Azure PostgreSQL – basis data relasional untuk kasus, pengguna, dokter, fasilitas, rujukan, log, dsb.
-- Azure Cognitive Services (Vision) & Azure Copilot Studio/LUIS – menyediakan API inference. Backend memanggil API ini secara asynchronous; hasilnya diteruskan via ASB ke modul triage.
-- Azure Monitor & Application Insights – memonitor latency, jumlah pesan antrian, error rate, dan logging.
+- Azure Communication Services (ACS) – inbound WhatsApp ke webhook backend; outbound OTP/status.
+- Azure Blob Storage – simpan gambar dan heatmap; metadata di tabel images dengan blob_url dan quality_metrics.
+- Azure PostgreSQL – basis data relasional untuk kasus, pengguna, dokter, fasilitas, rujukan, log.
+- Azure Cognitive Services (Vision) & Azure AI Text Analytics/Copilot Studio – API inference untuk gambar dan NLU.
+- Azure Monitor & Application Insights – telemetry dan logging.
 
-#### 4.2 Pipeline Data
+#### 4.2 Pipeline Data (default langsung)
 
-Gambar dan teks mengikuti dua jalur terpisah sebelum digabung:
+- Teks: Pesan diterima → normalisasi NLU → simpan ke DB (symptoms) → update perhitungan S_s.
+- Gambar: Media WA diunduh → upload ke Blob → QC → Vision → simpan markers & S_i ke DB (images).
+- Triage: Setelah S_s atau S_i tersedia, evaluasi kesiapan; ketika keduanya ada, hitung S dan perbarui cases.severity_* serta cases.status.
 
-- Teks: Pesan diterima → dipublish ke ingest-queue → worker nlu-service memproses via Copilot → menyimpan output ke DB (symptoms table) → mempublish ke ai-queue.
-- Gambar: Tautan media WhatsApp diunduh ke Blob Storage oleh worker media-downloader; metadata disimpan. Worker vision-service mengambil blob, memanggil Cognitive Services, mengekstrak markah & heatmap, menyimpan ke DB dan mempublish ke ai-queue.
-- Triage: Worker triage-engine mendengarkan ai-queue; setelah menerima kedua tipe data, menghitung S dan memperbaharui cases.severity. Jika sudah siap, mempublish ke notification-queue untuk memberitahu dokter dan pengguna.
+#### 4.3 Alternatif opsional: Dengan Azure Service Bus
+
+Untuk skala, antrian dapat ditambahkan antara ingestion, AI, dan notifikasi menggunakan Azure Service Bus. Jalur ini memecah proses menjadi workers yang berkomunikasi melalui queue (ingest-queue, ai-queue, notification-queue). Lihat juga tahap 7 di `overview_integration.md`.
 
 ### 5. Rencana Implementasi Express.js
 
@@ -138,7 +137,7 @@ project-root/
 │   ├── triageService.js       # hitung skor & state machine
 │   ├── referralService.js     # algoritma geolokasi
 │   ├── followUpService.js     # scheduler follow-up
-│   └── messagingService.js    # wrapper Azure Service Bus
+│   └── messagingService.js    # wrapper Azure Service Bus (opsional)
 ├── models/
 │   ├── user.js
 │   ├── case.js
@@ -173,7 +172,7 @@ project-root/
 Gunakan ORM seperti Sequelize atau Prisma. Skema utama:
 
 - users (id, phone_number UNIQUE, otp_hash, is_verified, created_at)
-- cases (id, user_id, state, severity_score, severity_class, doctor_id, created_at, updated_at)
+- cases (id, user_id, status, severity_score, severity_class, doctor_id, created_at, updated_at)
 - symptoms (id, case_id, fever_status BOOLEAN, onset_days INTEGER, dyspnea BOOLEAN, comorbidity BOOLEAN, score, raw_text JSONB)
 - images (id, case_id, blob_url, heatmap_url, markers JSONB, quality_metrics JSONB, score, processed_at)
 - doctors (id, name, specialty, email, password_hash, is_active)
@@ -191,7 +190,7 @@ HTTP Method & Path — Deskripsi & Aksi Utama:
 
 - POST /auth/send-otp — Menerima nomor, mengirim OTP via ACS, menyimpan otp_hash.
 - POST /auth/verify-otp — Verifikasi OTP; jika benar, generate JWT dan buat user baru jika perlu.
-- POST /chat/incoming — Endpoint webhook WA: terima pesan/attachment, identifikasi user_id, buat/temukan case, simpan pesan, push ke ingest-queue via messagingService.
+- POST /chat/incoming — Endpoint webhook WA: terima pesan/attachment, identifikasi user_id, buat/temukan case, simpan pesan, proses langsung ke nluService/visionService sesuai tipe konten.
 - GET /cases/:id — Ambil detail kasus termasuk severity_score, state, symptoms, images, doctor_actions.
 - POST /cases/:id/doctor-review — Dokter memperbarui diagnosis: parameter new_severity, notes, action (approve, adjust, refer). Update cases.severity_class, simpan ke doctor_actions, trigger referral bila perlu.
 - GET /facilities — Mengembalikan daftar fasilitas; optional query lat, lon untuk filtering.
@@ -199,15 +198,15 @@ HTTP Method & Path — Deskripsi & Aksi Utama:
 
 Setiap controller memanggil service terkait (e.g., triageService.calculateSeverity(caseId)) yang mengandung logika domain. Middleware authMiddleware memastikan hanya dokter/hospital yang sah dapat mengakses endpoint tertentu.
 
-#### 5.4 Konsumen Event & Service Bus
+#### 5.4 Opsi: Konsumen Event dengan Service Bus
 
-Buat worker terpisah (dapat dijalankan sebagai proses Node berbeda) untuk memproses pesan antrian:
+Buat worker terpisah (dapat dijalankan sebagai proses Node berbeda) untuk memproses pesan antrian jika arsitektur memilih ASB:
 
 - Ingestion Worker (ingestWorker.js): Mendengarkan ingest-queue; memeriksa tipe pesan (teks/gambar), memanggil nluService atau visionService, menyimpan hasil, mempublikasikan ID kasus ke ai-queue.
 - AI Worker (triageWorker.js): Mendengarkan ai-queue; ketika kedua hasil (symptoms & images) tersedia, memanggil triageService.calculateSeverity, memperbarui DB, dan mem-publish ke notification-queue.
 - Notification Worker (notifyWorker.js): Mengambil notification-queue; jika target dokter, kirim e‑mail/WA; jika target user, kirim pesan status triage atau follow-up. Gunakan modul @azure/communication-chat atau @azure/communication-sms.
 
-Konsumen memanfaatkan pustaka @azure/service-bus untuk membuat receiver dan processMessage handler seperti contoh Microsoft learn.microsoft.com.
+Konsumen memanfaatkan pustaka @azure/service-bus untuk membuat receiver dan processMessage handler.
 
 #### 5.5 Integrasi AI & Layanan Azure
 
@@ -221,12 +220,12 @@ Konsumen memanfaatkan pustaka @azure/service-bus untuk membuat receiver dan proc
 - Unit testing: Gunakan Jest/Mocha untuk menguji setiap service (OTP, NLU, Vision, Triage). Mock API eksternal dengan sinon.
 - Integration testing: Setup lingkungan staging Azure; gunakan Postman atau k6 untuk memverifikasi alur end‑to‑end.
 - CI/CD: Gunakan GitHub Actions untuk lint, test, dan deploy. Step akhir mendorong container ke Azure Container Registry dan mengupdate App Service.
-- Provisioning: Gunakan Terraform/Bicep untuk membuat resources (ACS, Service Bus, Blob Storage, PostgreSQL, Monitor). Pastikan RBAC tertata.
+- Provisioning: Gunakan Terraform/Bicep untuk membuat resources (ACS, Blob Storage, PostgreSQL, Monitor; Service Bus jika dipakai). Pastikan RBAC tertata.
 
 ### 6. Observabilitas & Skala
 
-- Metode Monitoring: Pasang Azure Monitor & Application Insights; log state_transition_duration, queue_length, ai_response_time, doctor_action_latency. Buat alert jika ai-queue backlog > X atau severity_calculation_error > Y.
-- Skalabilitas: Manfaatkan Service Bus untuk horizontal scaling. App Service dapat auto-scale berdasarkan CPU atau panjang antrian. Proses heavy (vision inference) dapat dipindahkan ke Azure Functions berukuran besar. Gunakan retryPolicy di Service Bus.
+- Metode Monitoring: Pasang Azure Monitor & Application Insights; log state_transition_duration, ai_response_time, doctor_action_latency, dan queue_length (jika ASB digunakan). Buat alert bila error rate tinggi; jika ASB digunakan, tambahkan alert backlog antrian.
+- Skalabilitas: Default tanpa ASB dapat di-scale secara vertikal atau dengan memisahkan proses. Jika memilih ASB, gunakan antrian untuk horizontal scaling dan isolasi beban; proses berat bisa dipindah ke Azure Functions.
 - Reliability: Tera ulang pesan jika gagal (Dead Letter Queue), implementasi idempotensi di worker. Simpan state intermediate di DB agar proses dapat dilanjutkan.
 
 ### 7. Rencana Tahapan Pengembangan
@@ -243,101 +242,6 @@ Rencana ini memperluas blueprint sebelumnya dengan tingkat kedalaman yang lebih 
 
 Jika ada bagian yang masih memerlukan penjelasan atau pendalaman lebih lanjut, silakan beritahu saya.
 
-### Sources
-
-You said:
-sepertinya azure service bus tidak diperlukan. tolong hapus bus. ini kan pake azure message jadi santai saja.
-ChatGPT said:
-Stopped thinking
-
-Sources
-You said:
-sepertinya azure service bus tidak diperlukan. tolong hapus bus. ini kan pake azure message jadi santai saja.
-ChatGPT said:
-Stopped thinking
-
-You said:
-OKAY SKARANG, SAYA INGIN ANDA MEMBUAT SEBUAH overview DEVELOPMENT SYSTEM SI AI, AGAR SEBUAH GPT.5 CODEX BISA MENGGENERATE BASICALLY FULL DESIGN DAN MANAGEMENT IN AMRKDOWNS BASED ON THE CONTEXT AND OVERVIEW OF DESIGN. DAN KEMUDIAN BISA MENG PM DIRINYA SENDIRI UNTUK CODE
-
-DIMANA AKAN ADA  3 FOLDER BESAR:
-- design (where the ai SHOULD draft  every detailed design in md). boleh bkin subfolder
-- management (where all the pm sheets, checklist, dll disini)
-- prompts (full prompt will be used by ai to prompt itself and generate code sections. karean tidajk run sekaligus, maka harus di speciiy sedan gbaut aap, detialed prompt apa, file reference apa, limitasi apa, dll. ADA JUGA PROMPT BUAT AMANGEMENT
-
-SO BASICLLY THIS FILE, IS FOR YOU TO CREATE THE OVERVIEW_MANAGEMENT DULU. DEFINE THE WHOLE MAANGEMENT SYSTEM SE CLEAR MUNGKIN .(karena dari sini akan dimekarakn)
-ChatGPT said:
-Worked for 34 seconds
-
-Berikut dokumen overview management yang menggambarkan kerangka kerja pengembangan Breathy berbasis AI. Dokumen ini menjelaskan struktur direktori untuk desain, manajemen, dan prompt, serta alur kolaborasi antara manusia dan agen AI dalam menulis desain, mengelola backlog, membuat prompt, dan menghasilkan kode. Silakan baca lebih lanjut di sini:
-
-Overview Manajemen Pengembangan Breathy dengan AI Codex
-
-File ini mendefinisikan kerangka kerja manajemen proyek yang dirancang untuk memfasilitasi kolaborasi antara manusia dan agen AI (misal GPT‑5 Codex) dalam membangun aplikasi backend Breathy. Sistem ini menata seluruh artefak ke dalam tiga direktori utama—design, management, dan prompts—dan menjabarkan alur kerja, tanggung jawab, serta mekanisme umpan balik agar AI dapat menghasilkan desain, kode, dan rencana manajemen secara bertahap dan terstruktur.
-
-Struktur Direktori
-
-/design
-Menampung dokumen desain teknis dan fungsional. Dokumen di sini menjadi referensi utama bagi AI saat menulis kode. Subfolder yang disarankan:
-
-architecture/: diagram arsitektur, flowchart, dan deskripsi modul.
-
-database/: model data, skema tabel, ERD, dan migrasi.
-
-api/: spesifikasi endpoint (path, method, payload, respons).
-
-algorithms/: penjelasan algoritma (NLU, CV, triage, geolokasi).
-
-security/: panduan privasi, enkripsi, RBAC.
-Setiap file harus dalam format Markdown yang terstruktur dengan judul, subjudul, dan tabel jika diperlukan.
-
-/management
-Berisi artefak manajemen proyek yang memastikan pekerjaan berjalan sesuai metodologi agile. Contohnya:
-
-backlog.md: daftar fitur, user story, prioritas, dan estimasi poin.
-
-sprint_plan.md: rencana sprint berjalan (goal, item backlog terpilih, durasi).
-
-status_board.md: papan Kanban dengan kolom To Do, In Progress, Review, Done.
-
-checklist.md: daftar periksa compliance (privasi, keamanan, pengujian) yang harus dicek sebelum rilis.
-
-meeting_notes/: catatan retrospective atau daily stand‑up.
-Dokumen ini memandu AI saat mengambil keputusan manajerial, misalnya memilih fitur mana yang diprioritaskan atau menilai kesiapan rilis.
-
-/prompts
-Menyimpan teks prompt siap pakai yang akan digunakan untuk memandu AI menghasilkan kode atau dokumen. Memiliki dua jenis:
-
-Prompts untuk kode – misalnya generate_route_prompt.md, create_model_prompt.md. Setiap file mendeskripsikan tugas spesifik (contoh: “Buat file services/triageService.js berdasarkan design/algorithms/triage.md dan design/database/schema.md. Pastikan menggunakan async/await, menangani error, dan mengekspor fungsi calculateSeverity.”).
-
-Prompts untuk manajemen – misalnya update_backlog_prompt.md untuk meminta AI mengurai kebutuhan baru dan menambahkannya ke backlog, atau sprint_review_prompt.md untuk merangkum kemajuan sprint dan mengidentifikasi hambatan.
-Setiap prompt harus menyertakan konteks: rujukan ke dokumen desain relevan, batasan (mis. “maksimal 100 baris kode”), dan format output yang diharapkan.
-
-Alur Kerja AI dan Manusia
-
-Persiapan Desain – Tim manusia menulis dokumen di folder design berdasarkan visi produk (misalnya blueprint Breathy). Dokumen harus cukup rinci sehingga AI dapat mengimplementasikan kode tanpa asumsi. Jika ada perubahan, dokumen ini yang diperbarui terlebih dahulu.
-
-Pemetaan Backlog – Product Owner (manusia) mengonversi kebutuhan dari design ke user story di management/backlog.md, menambahkan prioritas dan estimasi. AI dapat membantu menyarankan pembagian modul atau urutan pengerjaan berdasarkan kompleksitas.
-
-Pembuatan Prompt – Untuk setiap modul yang akan dikode, tim menulis file prompt baru dalam prompts/code yang:
-
-Menjelaskan secara ringkas apa yang harus dilakukan.
-
-Menyertakan referensi ke dokumen desain yang relevan.
-
-Menyebutkan nama file output (misal routes/caseRoutes.js) dan struktur kode yang diharapkan (ES modules/CommonJS).
-
-Menetapkan batasan (ukuran fungsi, dependencies yang boleh digunakan).
-Setelah prompt siap, AI Codex memprosesnya untuk menghasilkan kode dan menambah file ke repositori.
-
-Manajemen Sprint – Di awal sprint, management/sprint_plan.md diisi dengan item backlog terpilih. AI dapat membaca backlog dan membantu menyusun rencana sprint. Selama sprint, AI memutakhirkan status_board.md ketika menyelesaikan task (misal “generate triage service”), dan menambahkan catatan ke meeting_notes/ jika ada kendala.
-
-Code Generation & Review – AI menghasilkan file kode berdasarkan prompt. Setelah file dibuat, manusia meninjau (code review), memberi masukan, dan memperbaiki jika diperlukan. Versi final disimpan di repositori dan diacu di dokumen manajemen (kolom Done).
-
-Testing & Deployment – Saat modul selesai, AI dapat dipandu dengan prompt manajemen untuk membuat tes unit atau skrip deployment. Checklist di management/checklist.md harus diverifikasi sebelum meluncurkan ke staging/produksi.
-
-Rekomendasi Standar Isi Prompt
-
-Pendahuluan: satu paragraf yang menjelaskan tujuan tugas.
 
 Rujukan: tautan atau relative path ke dokumen desain dan file kode lain yang relevan.
 

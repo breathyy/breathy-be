@@ -3,8 +3,8 @@
 Tujuan: Gabungkan skor gejala (S_s) dan skor citra (S_i) menjadi skor keparahan total S untuk menentukan kelas Mild/Moderate/Severe.
 
 Definisi:
-- S_i: skor dari analisis citra sputum/tenggorokan (0–1). Marker: sputum hijau (0.40), bercak darah (0.30), viskositas (0.20), jernih (0.10 indikator ringan/baseline). Bobot dapat disetel.
-- S_s: skor dari NLU atas gejala: demam ≥ 38 °C (0.30), durasi batuk > 3 hari (0.20), sesak napas (0.35), komorbiditas (0.15).
+- S_i: skor dari analisis citra sputum/tenggorokan (0–1) via Azure Computer Vision. Marker: sputum hijau (0.40), bercak darah (0.30), viskositas (0.20), jernih (0.10 baseline). Bobot dapat disetel.
+- S_s: skor dari NLU atas gejala via Azure AI Text Analytics: demam ≥ 38 °C (0.30), durasi batuk > 3 hari (0.20), sesak napas (0.35), komorbiditas (0.15).
 - α (alpha): bobot visi relatif terhadap teks (default lebih besar untuk visi). Ambil dari env TRIAGE_ALPHA.
 
 Rumus:
