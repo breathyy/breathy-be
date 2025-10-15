@@ -1,0 +1,203 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model cases {
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id         String          @db.Uuid
+  doctor_id       String?         @db.Uuid
+  status          case_status     @default(IN_CHATBOT)
+  severity_score  Decimal?        @db.Decimal(4, 2)
+  severity_class  severity_level?
+  sputum_category sputum_category @default(UNKNOWN)
+  start_date      DateTime?       @db.Date
+  end_date        DateTime?       @db.Date
+  triage_metadata Json            @default("{}")
+  created_at      DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime        @default(now()) @db.Timestamptz(6)
+  doctor_users    doctor_users?   @relation(fields: [doctor_id], references: [id], onUpdate: NoAction)
+  users           users           @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  chat_messages   chat_messages[]
+  daily_tasks     daily_tasks[]
+  images          images[]
+  referrals       referrals[]
+  symptoms        symptoms[]
+
+  @@index([created_at], map: "idx_cases_created_at")
+  @@index([status], map: "idx_cases_status")
+  @@index([user_id], map: "idx_cases_user_id")
+}
+
+model chat_messages {
+  id           String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  case_id      String            @db.Uuid
+  message_type chat_message_type
+  content      String?
+  blob_ref     String?
+  meta         Json              @default("{}")
+  created_at   DateTime          @default(now()) @db.Timestamptz(6)
+  cases        cases             @relation(fields: [case_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([case_id], map: "idx_chat_messages_case_id")
+}
+
+model daily_tasks {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  case_id      String    @db.Uuid
+  day_index    Int
+  task_type    String    @db.VarChar(40)
+  instruction  String
+  done         Boolean   @default(false)
+  due_at       DateTime? @db.Timestamptz(6)
+  completed_at DateTime? @db.Timestamptz(6)
+  notes        String?
+  created_at   DateTime  @default(now()) @db.Timestamptz(6)
+  cases        cases     @relation(fields: [case_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([case_id, day_index, task_type])
+  @@index([case_id], map: "idx_daily_tasks_case_id")
+}
+
+model doctor_users {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String   @db.Uuid
+  full_name  String   @db.VarChar(160)
+  email      String   @unique @db.VarChar(160)
+  password_hash String @db.Text
+  specialty  String?  @db.VarChar(120)
+  role       String   @default("DOCTOR") @db.VarChar(40)
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  cases      cases[]
+  users      users    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model hospital_users {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id     String    @db.Uuid
+  hospital_id String    @db.Uuid
+  email       String    @unique @db.VarChar(160)
+  password_hash String  @db.Text
+  role        String    @default("HOSPITAL") @db.VarChar(40)
+  created_at  DateTime  @default(now()) @db.Timestamptz(6)
+  hospitals   hospitals @relation(fields: [hospital_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users       users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model hospitals {
+  id             String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name           String           @db.VarChar(160)
+  address        String?
+  latitude       Decimal?         @db.Decimal(9, 6)
+  longitude      Decimal?         @db.Decimal(9, 6)
+  contact_number String?          @db.VarChar(32)
+  created_at     DateTime         @default(now()) @db.Timestamptz(6)
+  hospital_users hospital_users[]
+  referrals      referrals[]
+}
+
+model images {
+  id              String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  case_id         String            @db.Uuid
+  blob_name       String
+  blob_url        String
+  content_type    String            @db.VarChar(120)
+  file_size_bytes BigInt?
+  source          image_source_type @default(ACS)
+  qc_status       String            @default("PENDING") @db.VarChar(32)
+  quality_metrics Json              @default("{}")
+  markers         Json              @default("{}")
+  s_i             Decimal?          @db.Decimal(4, 2)
+  vision_ran_at   DateTime?         @db.Timestamptz(6)
+  created_at      DateTime          @default(now()) @db.Timestamptz(6)
+  cases           cases             @relation(fields: [case_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([case_id], map: "idx_images_case_id")
+}
+
+model otp_codes {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String   @db.Uuid
+  hash       String
+  expires_at DateTime @db.Timestamptz(6)
+  attempts   Int      @default(0) @db.SmallInt
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  users      users    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model referrals {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  case_id     String    @db.Uuid
+  facility_id String    @db.Uuid
+  summary     String?
+  status      String    @default("PENDING") @db.VarChar(32)
+  created_at  DateTime  @default(now()) @db.Timestamptz(6)
+  cases       cases     @relation(fields: [case_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  hospitals   hospitals @relation(fields: [facility_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([case_id], map: "idx_referrals_case_id")
+}
+
+model symptoms {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  case_id          String   @db.Uuid
+  fever_status     Boolean?
+  onset_days       Int?
+  dyspnea          Boolean?
+  comorbidity      Boolean?
+  severity_symptom Decimal? @db.Decimal(4, 2)
+  raw_text         Json     @default("{}")
+  created_at       DateTime @default(now()) @db.Timestamptz(6)
+  cases            cases    @relation(fields: [case_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([case_id], map: "idx_symptoms_case_id")
+}
+
+model users {
+  id             String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  phone_number   String           @unique @db.VarChar(32)
+  display_name   String?          @db.VarChar(120)
+  is_verified    Boolean          @default(false)
+  created_at     DateTime         @default(now()) @db.Timestamptz(6)
+  cases          cases[]
+  doctor_users   doctor_users[]
+  hospital_users hospital_users[]
+  otp_codes      otp_codes[]
+}
+
+enum case_status {
+  IN_CHATBOT
+  WAITING_DOCTOR
+  MILD
+  MODERATE
+  SEVERE
+}
+
+enum chat_message_type {
+  text
+  image
+}
+
+enum image_source_type {
+  ACS
+  MANUAL
+}
+
+enum severity_level {
+  MILD
+  MODERATE
+  SEVERE
+}
+
+enum sputum_category {
+  GREEN
+  BLOOD_TINGED
+  VISCOUS
+  CLEAR
+  UNKNOWN
+}

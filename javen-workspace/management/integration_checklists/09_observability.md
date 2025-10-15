@@ -14,4 +14,4 @@ Rujukan: [overview_integration.md](../../overview_integration.md)
 
 ## Catatan
 
-- ...
+- Application Insights SDK telah di-wire lewat `services/appInsightsService.js`; menunggu `APPINSIGHTS_CONNECTION_STRING` untuk verifikasi telemetri.

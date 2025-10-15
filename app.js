@@ -1,6 +1,7 @@
 const express = require('express');
 const helmet = require('helmet');
 const config = require('./src/config/env.config');
+const appInsightsService = require('./src/services/appInsightsService');
 const logger = require('./src/middlewares/logger.middleware');
 const errorHandler = require('./src/middlewares/error.middleware');
 const healthService = require('./src/services/health.service');
@@ -10,12 +11,15 @@ const caseRoutes = require('./src/routes/case.route');
 const taskRoutes = require('./src/routes/task.route');
 const referralRoutes = require('./src/routes/referral.route');
 
+appInsightsService.setup();
+
 const app = express();
 
 app.disable('x-powered-by');
 app.use(helmet());
 app.use(express.json({ limit: '1mb' }));
 app.use(logger);
+app.use(require('./src/middlewares/sanitize.middleware'));
 
 app.get('/healthz', async (req, res, next) => {
   try {
@@ -28,8 +32,8 @@ app.get('/healthz', async (req, res, next) => {
 
 app.use('/auth', authRoutes);
 app.use('/chat', chatRoutes);
+app.use('/cases', taskRoutes);
 app.use('/cases', caseRoutes);
-app.use('/tasks', taskRoutes);
 app.use('/referrals', referralRoutes);
 
 app.use((req, res) => {

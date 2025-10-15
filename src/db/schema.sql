@@ -44,7 +44,8 @@ CREATE TABLE doctor_users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
   full_name VARCHAR(160) NOT NULL,
-  email VARCHAR(160) UNIQUE,
+  email VARCHAR(160) UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
   specialty VARCHAR(120),
   role VARCHAR(40) NOT NULL DEFAULT 'DOCTOR',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -64,6 +65,8 @@ CREATE TABLE hospital_users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
   hospital_id UUID NOT NULL REFERENCES hospitals (id) ON DELETE CASCADE,
+  email VARCHAR(160) UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
   role VARCHAR(40) NOT NULL DEFAULT 'HOSPITAL',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

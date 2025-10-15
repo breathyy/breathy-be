@@ -11,6 +11,17 @@ const config = {
   port: Number(process.env.APP_PORT) || 3000,
   nodeEnv: process.env.NODE_ENV || 'development',
   databaseUrl: process.env.DATABASE_URL || '',
+  jwtSecret: process.env.JWT_SECRET || '',
+  jwtExpiresIn: process.env.JWT_EXPIRES_IN || '1h',
+  storageConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING || '',
+  storageContainer: process.env.STORAGE_CONTAINER || 'breathy-images',
+  aiTextEndpoint: process.env.AI_TEXT_ENDPOINT || '',
+  aiTextKey: process.env.AI_TEXT_KEY || '',
+  azureCvEndpoint: process.env.AZURE_CV_ENDPOINT || '',
+  azureCvKey: process.env.AZURE_CV_KEY || '',
+  acsConnectionString: process.env.ACS_CONNECTION_STRING || '',
+  acsWhatsAppNumber: process.env.ACS_WHATSAPP_NUMBER || '',
+  appInsightsConnectionString: process.env.APPINSIGHTS_CONNECTION_STRING || '',
   triageAlpha: Number(process.env.TRIAGE_ALPHA) || 0.6,
   triageThresholds: parseThresholds(process.env.TRIAGE_THRESHOLDS || '0.4|0.7')
 };

@@ -4,11 +4,11 @@ Rujukan: [overview_integration.md](../../overview_integration.md)
 
 ## Tugas
 
-- [ ] Instal paket SDK: `@azure/ai-text-analytics`, `@azure/cognitiveservices-computervision`.
+- [x] Instal paket SDK: `@azure/ai-text-analytics`, `@azure/cognitiveservices-computervision`.
 - [ ] Set `.env`: AI_TEXT_ENDPOINT, AI_TEXT_KEY, AZURE_CV_ENDPOINT, AZURE_CV_KEY.
-- [ ] Implement `nluService` dengan SDK untuk ekstraksi entitas dan perhitungan S_s.
-- [ ] Implement `visionService` dengan SDK untuk QC dasar, ekstraksi marker, dan S_i.
-- [ ] Simpan hasil ke DB (symptoms, images) dan log observabilitas.
+- [x] Implement `nluService` dengan SDK untuk ekstraksi entitas dan perhitungan S_s.
+- [x] Implement `visionService` dengan SDK untuk QC dasar, ekstraksi marker, dan S_i.
+- [x] Simpan hasil ke DB (symptoms, images) dan log observabilitas.
  - [ ] Dokumentasikan bobot dan thresholds sesuai desain algoritma; simpan di konfigurasi.
 
 ## Verifikasi
@@ -18,4 +18,5 @@ Rujukan: [overview_integration.md](../../overview_integration.md)
 
 ## Catatan
 
-- ...
+- `nluService` kini menyimpan hasil ekstraksi gejala dan skor S_s saat webhook teks diterima; layanan memerlukan AI_TEXT_* env agar tidak fallback ke error metadata.
+- Vision service kini memanggil Azure Computer Vision ketika kredensial dan SAS download tersedia; fallback lokal tetap aktif bila konfigurasi belum lengkap.
