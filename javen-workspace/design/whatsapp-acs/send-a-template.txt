@@ -1,0 +1,78 @@
+Send a template
+Messages that initiate a business-initiated conversation require a message template. Azure Communication Services Chat currently supports only text-based message templates. You must ensure all end-users consent to receive your messages.Learn more about opt-in best practices.
+All message templates need to be approved by WhatsApp.Learn more about WhatsApp message template guidelines.
+Reply {{1}} to receive {{2}}. Txt {{3}} for HELP, Txt {{4}} to opt-out.
+Set placeholder values for your variables tags to preview your template and provide sample content for WhatsApp review.
+1
+Y
+2
+appointment reminders
+3
+HELP
+4
+STOP
+
+const MessageClient = require("@azure-rest/communication-messages").default;
+
+const connectionString = "endpoint=https://breathy-bot.asiapacific.communication.azure.com/;accesskey=AWoI2qWq9Ou1sIF8RyMjvK7Jh9acsXa6jPoJeSF8bNXJBysn0woBJQQJ99BJACULyCpho4xYAAAAAZCSMNob";
+const client = MessageClient(connectionString);
+
+async function main() {
+    const value1 = {
+        kind: "text",
+        name: "value1",
+        text: "Y"
+    };
+    const value2 = {
+        kind: "text",
+        name: "value2",
+        text: "appointment reminders"
+    };
+    const value3 = {
+        kind: "text",
+        name: "value3",
+        text: "HELP"
+    };
+    const value4 = {
+        kind: "text",
+        name: "value4",
+        text: "STOP"
+    };
+
+    const bindings = {
+        kind: "whatsApp",
+        body: [
+            {
+                refValue: value1.Name
+            },
+            {
+                refValue: value2.Name
+            },
+            {
+                refValue: value3.Name
+            },
+            {
+                refValue: value4.Name
+            }
+        ]
+    };
+
+    const template = {
+        name: "optin_confirmation",
+        language: "en_US",
+        bindings: bindings,
+        values: ["value1", "value2", "value3", "value4"]
+    };
+
+    const templateResult = await client.path("/messages/notifications:send").post({
+        contentType: "application/json",
+        body: {
+            channelRegistrationId: "<channel_registration_id>",
+            to: ["<to_phone_number>"],
+            kind: "template",
+            template: template
+        }
+    });
+}
+
+main();

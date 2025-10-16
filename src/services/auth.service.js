@@ -32,6 +32,24 @@ const signToken = (payload, options = {}) => {
   });
 };
 
+const signPatientSession = ({ userId, phoneNumber, caseId, displayName }) => {
+  if (!userId || !caseId) {
+    throw createError(500, 'Patient session requires user and case');
+  }
+  const token = signToken({
+    sub: userId,
+    role: 'PATIENT',
+    userId,
+    caseId,
+    phoneNumber: phoneNumber || null,
+    displayName: displayName || null
+  });
+  return {
+    token,
+    expiresIn: config.jwtExpiresIn || '1h'
+  };
+};
+
 const mapDoctorProfile = (record) => ({
   id: record.id,
   userId: record.user_id,
@@ -162,5 +180,6 @@ const hashPassword = async (password) => {
 module.exports = {
   loginProvider,
   getCurrentProfile,
-  hashPassword
+  hashPassword,
+  signPatientSession
 };

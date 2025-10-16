@@ -3,6 +3,16 @@ const blobService = require('../services/blob.service');
 const triageService = require('../services/triage.service');
 const followupService = require('../services/followup.service');
 const { toNullableDecimal, toNullableNumber } = require('../utils/prisma-helpers');
+const { REQUIRED_SYMPTOM_FIELDS } = require('../utils/triage-metadata');
+
+const DEFAULT_COMPLETENESS = {
+  missingSymptoms: [...REQUIRED_SYMPTOM_FIELDS],
+  readyForPreprocessing: false,
+  imageProvided: false,
+  imageRecommended: true,
+  needsMoreSymptoms: true,
+  updatedAt: null
+};
 
 const normalizeCaseId = (value) => {
   if (!value || typeof value !== 'string') {
@@ -86,6 +96,35 @@ const mapSymptoms = (record) => ({
   createdAt: record.created_at
 });
 
+function buildPreprocessingSummary(metadata) {
+  if (!metadata || typeof metadata !== 'object') {
+    return {
+      dataCompleteness: { ...DEFAULT_COMPLETENESS, missingSymptoms: [...DEFAULT_COMPLETENESS.missingSymptoms] },
+      symptomExtraction: null,
+      visionAnalysis: null,
+      symptomStats: null,
+      imageStats: null
+    };
+  }
+  const completenessSource =
+    metadata.dataCompleteness && typeof metadata.dataCompleteness === 'object' ? metadata.dataCompleteness : null;
+  const dataCompleteness = completenessSource
+    ? {
+        ...completenessSource,
+        missingSymptoms: Array.isArray(completenessSource.missingSymptoms)
+          ? completenessSource.missingSymptoms
+          : []
+      }
+    : { ...DEFAULT_COMPLETENESS, missingSymptoms: [...DEFAULT_COMPLETENESS.missingSymptoms] };
+  return {
+    dataCompleteness,
+    symptomExtraction: metadata.lastSymptomExtraction || null,
+    visionAnalysis: metadata.lastVisionAnalysis || null,
+    symptomStats: metadata.symptomStats || null,
+    imageStats: metadata.imageStats || null
+  };
+}
+
 const mapCaseDetail = (record) => {
   const symptomsList = Array.isArray(record.symptoms) ? record.symptoms : [];
   const imagesList = Array.isArray(record.images) ? record.images : [];
@@ -117,7 +156,8 @@ const mapCaseDetail = (record) => {
         }
       : null,
       latestSymptoms: symptomsList.length > 0 ? mapSymptoms(symptomsList[0]) : null,
-      recentImages: imagesList.map(mapImage)
+      recentImages: imagesList.map(mapImage),
+      preprocessing: buildPreprocessingSummary(triageMetadata)
   };
 };
 

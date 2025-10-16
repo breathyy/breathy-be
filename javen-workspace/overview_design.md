@@ -21,7 +21,7 @@ Breathy mengintegrasikan beberapa komponen:
 
 - Chatbot Percakapan Adaptif – bot di WhatsApp dan web yang mengajukan pertanyaan kontekstual. Alur percakapan menyesuaikan berdasarkan jawaban; misalnya, keluhan “sesak napas” memicu pertanyaan lanjutan tentang frekuensi dan durasi. Bot mengumpulkan teks, metadata, dan gambar.
 - Analisis Gambar – foto tenggorokan atau sputum melewati pipeline pengolahan citra (quality control untuk blur/kecerahan dan cropping) sebelum model visi mendeteksi markah klinis seperti sputum hijau (bobot 0,40), bercak darah (0,30), kekentalan (0,20) dan sputum jernih (0,10). Hasil berupa Image Severity Score S_i pada rentang 0–1.
-- NLU untuk Gejala – input teks diproses oleh Microsoft Copilot Studio; variabel yang diekstraksi termasuk demam ≥ 38 °C (bobot 0,30), durasi batuk > 3 hari (0,20), sesak napas (0,35) dan komorbiditas (0,15). Outputnya Symptom Severity Score S_s.
+- NLU untuk Gejala – input teks diproses oleh OpenAI Chat Completions; variabel yang diekstraksi termasuk demam ≥ 38 °C (bobot 0,30), durasi batuk > 3 hari (0,20), sesak napas (0,35) dan komorbiditas (0,15). Outputnya Symptom Severity Score S_s.
 - Ensemble Triage – gabungan hasil visi dan NLU dengan bobot yang lebih besar pada citra. Tiga kelas keparahan didefinisikan: Mild (S<0.4), Moderate (0.4≤S≤0.7) dan Severe (S>0.7). Dokter selalu memverifikasi keputusan.
 - Dasbor Dokter & Rumah Sakit – antarmuka web (Next.js) yang menampilkan ringkasan kasus, heatmap gambar, prediksi AI, dan kontrol untuk menyetujui/menyesuaikan diagnosis. Rumah sakit mendapatkan notifikasi rujukan serta dasbor untuk memantau pasien darurat.
 - Orkestrasi Rujukan Berbasis Geolokasi – sistem mencari apotek/rumah sakit terdekat dalam jaringan mitra dan menghasilkan catatan rujukan berisi ringkasan klinis.
@@ -49,18 +49,20 @@ Untuk mendukung percakapan yang adaptif, backend harus mengelola state machine. 
 | REFERRAL            | Mempersiapkan rujukan: algoritma geolokasi memilih fasilitas terdekat; generate dokumen rujukan dengan ringkasan klinis. User menerima petunjuk    | Pasien diterima → COMPLETE                                                                                                                                                           |
 | COMPLETE            | Menandai kasus selesai; data disimpan untuk training/analitik.                                                                                      |                                                                                                                                                                                     |
 
-Transisi state dilakukan via update kolom cases.status di basis data. Integrasi message bus (Azure Service Bus) bersifat opsional untuk skala; MVP dapat berjalan tanpa bus dengan pemanggilan sinkron/asinkron terkoordinasi di backend.
+Transisi state dilakukan via update kolom cases.status di basis data. Orkestrasi dilakukan langsung oleh backend dengan menjaga operasi idempoten agar skala dan keandalan tetap terkontrol.
+
+Bot WhatsApp memakai persona “Breathy” yang ceria dan empatik dalam Bahasa Indonesia. Pertanyaan wajib (demam ≥38°C, durasi batuk, sesak napas, komorbid) dikirim berurutan, diikuti topik opsional (riwayat paparan, obat yang diminum). Setelah ringkasan dikirim dan pasien membalas “YA”, kasus otomatis dinaikkan ke status `WAITING_DOCTOR`. Setiap nomor WhatsApp hanya memiliki satu kasus aktif sehingga banyak percakapan bisa berlangsung paralel tanpa saling menimpa metadata.
 
 #### 3.2 NLU & Inference Gejala
 
-- Ekstraksi entitas: Gunakan Microsoft Copilot Studio atau Azure LUIS. Definisikan intent (konsultasi, upload foto) dan entitas (fever_status, onset_days, dyspnea, comorbidity, other_symptoms).
-- Normalisasi: Algoritma menormalisasi frasa (“tiga hari” → 3, “napas berat” → dyspnea = true). Gunakan confidence threshold (mis. ≥ 0,6) untuk menerima entitas; di bawah threshold perlu klarifikasi manual.
+- Ekstraksi entitas: Gunakan OpenAI Chat Completions (mis. model `gpt-4o-mini` atau yang dikonfigurasi). Prompt harus meminta respons JSON terstruktur dengan entitas (fever_status, onset_days, dyspnea, comorbidity, other_symptoms) dan confidence setiap entitas.
+- Normalisasi: Algoritma menormalisasi frasa (“tiga hari” → 3, “napas berat” → dyspnea = true). Gunakan confidence threshold (mis. ≥ 0,6) untuk menerima entitas; jika di bawah threshold, aktifkan fallback heuristik regex atau minta klarifikasi manual.
 - Perhitungan skor: S_s = 0.30 * fever + 0.20 * cough_duration + 0.35 * dyspnea + 0.15 * comorbidity. Setiap variabel bernilai 1 jika muncul; 0 jika tidak. Pertimbangkan penyesuaian bobot dari parameter konfigurasi (.env) agar dapat di-tune tanpa ubah kode.
 
-#### 3.3 Inference Gambar (Computer Vision)
+#### 3.3 Inference Gambar (Vision via GPT-4o)
 
-- Quality control: Gunakan Azure Cognitive Services Vision API. Periksa blur_score, brightness, dan aspect_ratio. Jika metrik di luar batas (mis. blur_score > 0.6 atau brightness < 0.3), minta foto ulang.
-- Deteksi markah: Model CNN terlatih mendeteksi markah: warna sputum (hijau/kuning), bercak darah, viskositas, area merah. Hasilnya adalah key‑value marker: confidence. Tiap marker memiliki bobot wᵢ sebagaimana tabel. Perhitungan: S_i = Σ(confidence_i * w_i) / Σ(w_i) menghasilkan nilai 0–1. Simpan metadata markers, heatmap_url (disimpan di Blob Storage) dalam tabel images.
+- Quality control: Backend menyimpan placeholder `quality_metrics` (blur/brightness dapat ditambahkan saat model internal siap). Bila QC gagal, minta foto ulang sebelum memanggil GPT-4o.
+- Deteksi markah: Panggil GPT-4o multimodal dengan `image_url` SAS. Prompt meminta JSON { markers: { GREEN, BLOOD_TINGED, VISCOUS, CLEAR }, confidence 0–1, rationale, dan ringkasan. Backend menggabungkan marker manual dengan output GPT-4o lalu menghitung S_i = Σ(confidence_i * w_i) / Σ(w_i) (wᵢ = 0.40 hijau, 0.30 darah, 0.20 viskositas, 0.10 jernih). Simpan metadata markers, summary, dan `sputumCategory` ke tabel images serta `cases.triage_metadata.lastVisionAnalysis`.
 
 #### 3.4 Ensemble Triage & Threshold
 
@@ -92,14 +94,14 @@ Dasbor menampilkan daftar kasus dengan filter (mild/moderate/severe), detail pas
 
 ### 4. Arsitektur Sistem & Integrasi Azure
 
-#### 4.1 Platform Azure (default tanpa Service Bus)
+#### 4.1 Platform Azure (default tanpa message bus)
 
 Breathy menggunakan layanan Azure melalui pemanggilan langsung dari backend tanpa message broker sebagai default:
 
 - Azure Communication Services (ACS) – inbound WhatsApp ke webhook backend; outbound OTP/status.
 - Azure Blob Storage – simpan gambar dan heatmap; metadata di tabel images dengan blob_url dan quality_metrics.
 - Azure PostgreSQL – basis data relasional untuk kasus, pengguna, dokter, fasilitas, rujukan, log.
-- Azure Cognitive Services (Vision) & Azure AI Text Analytics/Copilot Studio – API inference untuk gambar dan NLU.
+- Azure Cognitive Services (Vision) & OpenAI Chat Completions – API inference untuk gambar dan NLU.
 - Azure Monitor & Application Insights – telemetry dan logging.
 
 #### 4.2 Pipeline Data (default langsung)
@@ -107,10 +109,6 @@ Breathy menggunakan layanan Azure melalui pemanggilan langsung dari backend tanp
 - Teks: Pesan diterima → normalisasi NLU → simpan ke DB (symptoms) → update perhitungan S_s.
 - Gambar: Media WA diunduh → upload ke Blob → QC → Vision → simpan markers & S_i ke DB (images).
 - Triage: Setelah S_s atau S_i tersedia, evaluasi kesiapan; ketika keduanya ada, hitung S dan perbarui cases.severity_* serta cases.status.
-
-#### 4.3 Alternatif opsional: Dengan Azure Service Bus
-
-Untuk skala, antrian dapat ditambahkan antara ingestion, AI, dan notifikasi menggunakan Azure Service Bus. Jalur ini memecah proses menjadi workers yang berkomunikasi melalui queue (ingest-queue, ai-queue, notification-queue). Lihat juga tahap 7 di `overview_integration.md`.
 
 ### 5. Rencana Implementasi Express.js
 
@@ -120,7 +118,7 @@ Untuk skala, antrian dapat ditambahkan antara ingestion, AI, dan notifikasi meng
 project-root/
 ├── app.js          # entry point Express
 ├── config/
-│   ├── index.js    # load env vars, create DB & Service Bus clients
+│   ├── index.js    # load env vars, create DB clients and shared helpers
 │   ├── db.js       # initialize Sequelize/Prisma with PostgreSQL
 │   └── azure.js    # wrappers for ACS, Cognitive Services
 ├── controllers/
@@ -132,12 +130,11 @@ project-root/
 │   └── followUpController.js  # jadwal tindak lanjut
 ├── services/
 │   ├── otpService.js          # generate & verify OTP
-│   ├── nluService.js          # panggil Copilot/LUIS
+│   ├── nluService.js          # panggil OpenAI Chat Completions
 │   ├── visionService.js       # panggil Cognitive Services
 │   ├── triageService.js       # hitung skor & state machine
 │   ├── referralService.js     # algoritma geolokasi
-│   ├── followUpService.js     # scheduler follow-up
-│   └── messagingService.js    # wrapper Azure Service Bus (opsional)
+│   └── followUpService.js     # scheduler follow-up & pengingat
 ├── models/
 │   ├── user.js
 │   ├── case.js
@@ -198,29 +195,19 @@ HTTP Method & Path — Deskripsi & Aksi Utama:
 
 Setiap controller memanggil service terkait (e.g., triageService.calculateSeverity(caseId)) yang mengandung logika domain. Middleware authMiddleware memastikan hanya dokter/hospital yang sah dapat mengakses endpoint tertentu.
 
-#### 5.4 Opsi: Konsumen Event dengan Service Bus
+#### 5.4 Integrasi AI & Layanan Azure
 
-Buat worker terpisah (dapat dijalankan sebagai proses Node berbeda) untuk memproses pesan antrian jika arsitektur memilih ASB:
-
-- Ingestion Worker (ingestWorker.js): Mendengarkan ingest-queue; memeriksa tipe pesan (teks/gambar), memanggil nluService atau visionService, menyimpan hasil, mempublikasikan ID kasus ke ai-queue.
-- AI Worker (triageWorker.js): Mendengarkan ai-queue; ketika kedua hasil (symptoms & images) tersedia, memanggil triageService.calculateSeverity, memperbarui DB, dan mem-publish ke notification-queue.
-- Notification Worker (notifyWorker.js): Mengambil notification-queue; jika target dokter, kirim e‑mail/WA; jika target user, kirim pesan status triage atau follow-up. Gunakan modul @azure/communication-chat atau @azure/communication-sms.
-
-Konsumen memanfaatkan pustaka @azure/service-bus untuk membuat receiver dan processMessage handler.
-
-#### 5.5 Integrasi AI & Layanan Azure
-
-- Panggil Copilot/LUIS via REST API: POST /language/analyze-conversations dengan teks; parsing respons JSON untuk entitas & confidence.
+- Panggil OpenAI Chat Completions: panggil `chat.completions.create` dengan pesan user dan sistem yang memaksa output JSON; parsing respons JSON untuk entitas & confidence.
 - Panggil Cognitive Services Vision: POST /vision/v3.2/analyze dengan URL blob; parameter visualFeatures=Objects,Color; implementasi Node dengan @azure/cognitiveservices-computervision.
 - Pengunduhan media: WA menyediakan URL sementara; gunakan axios untuk mengunduh; upload ke Blob Storage via @azure/storage-blob, menghasilkan URL SAS.
 - Simpan token & endpoint di .env dan load di config/azure.js.
 
-#### 5.6 Pengujian & Deployment
+#### 5.5 Pengujian & Deployment
 
 - Unit testing: Gunakan Jest/Mocha untuk menguji setiap service (OTP, NLU, Vision, Triage). Mock API eksternal dengan sinon.
 - Integration testing: Setup lingkungan staging Azure; gunakan Postman atau k6 untuk memverifikasi alur end‑to‑end.
 - CI/CD: Gunakan GitHub Actions untuk lint, test, dan deploy. Step akhir mendorong container ke Azure Container Registry dan mengupdate App Service.
-- Provisioning: Gunakan Terraform/Bicep untuk membuat resources (ACS, Blob Storage, PostgreSQL, Monitor; Service Bus jika dipakai). Pastikan RBAC tertata.
+- Provisioning: Gunakan Terraform/Bicep untuk membuat resources (ACS, Blob Storage, PostgreSQL, Monitor). Pastikan RBAC tertata.
 
 ### 6. Observabilitas & Skala
 
@@ -233,7 +220,7 @@ Konsumen memanfaatkan pustaka @azure/service-bus untuk membuat receiver dan proc
 - Analisis – finalisasi backlog fitur berdasar bab 1–2 PDF: triage bot, AI preprocessing, dasbor dokter, referral engine, follow-up.
 - Desain – buat diagram alur data dari input WA hingga verifikasi dokter; desain basis data; validasi wireframe dengan dokter.
 - Implementasi Sprint – modul dibangun sebagai microservice: bot-ingestor, nlu-service, vision-service, triage-service, dashboard-service.
-- Integrasi – hubungkan modul via Service Bus, uji end‑to‑end; pastikan setiap state machine berjalan; implementasi RBAC dan logging.
+- Integrasi – hubungkan modul secara langsung, uji end‑to‑end; pastikan setiap state machine berjalan; implementasi RBAC dan logging.
 - MVP & Validasi – luncurkan pilot; lakukan survey lanjutan; sesuaikan threshold & bobot; siapkan dataset anonim untuk training.
 
 ### 8. Kesimpulan

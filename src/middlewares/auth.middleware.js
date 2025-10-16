@@ -43,6 +43,9 @@ const attachUserContext = (req, payload) => {
     id: payload.sub,
     role: payload.role,
     userId: payload.userId || null,
+    caseId: payload.caseId || null,
+    phoneNumber: payload.phoneNumber || null,
+    displayName: payload.displayName || null,
     tokenId: payload.jti || null
   };
 };

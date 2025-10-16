@@ -10,13 +10,11 @@ Dokumen ini merangkum hasil audit keselarasan antara berkas di `javen-workspace/
 
 ## Temuan Ketidakselarasan & Rekomendasi Perbaikan
 
-1) Service Bus: konteks vs overview/integration
-   - Lokasi:
-     - `context/context_breathy_architecture.md` — menekankan alur tanpa Azure Service Bus (langsung via backend).
-     - `overview_integration.md` — menempatkan Azure Service Bus (ASB) sebagai arsitektur utama, dengan catatan alternatif tanpa ASB di akhir.
-     - `overview_design.md` (bagian “4. Arsitektur Sistem & Integrasi Azure”) — kembali menempatkan ASB sebagai komponen inti.
-   - Dampak: Potensi kebingungan implementasi pipeline (workers, queue) dan urutan tahap integrasi (Tahap 07).
-   - Rekomendasi: Tetapkan “default MVP tanpa ASB” sesuai konteks; pertahankan ASB sebagai opsi lanjutan. Perbarui `overview_integration.md` sehingga skenario default adalah no‑bus, dan pindahkan ASB ke subbab “Arsitektur alternatif (opsional)”. Sinkronkan bahasa serupa di `overview_design.md`.
+1) Orkestrasi tanpa message bus (Tuntas)
+    - Lokasi:
+       - `context/context_breathy_architecture.md`, `overview_integration.md`, `overview_design.md` kini konsisten menegaskan orkestrasi langsung tanpa message bus.
+    - Dampak: Kebingungan sebelumnya sudah diselesaikan; pipeline 07 fokus pada idempoten & retry internal.
+    - Status: Updated per 16 Okt 2025.
 
 2) Nama state CaseStatus tidak konsisten (WAITING_DOCTOR vs WAIT_DOCTOR_REVIEW)
    - Lokasi:
@@ -69,11 +67,10 @@ Catatan: Perubahan di atas bersifat dokumentasi/konfigurasi dan tidak mengubah k
 
 ## Rekomendasi Tindak Lanjut (Prioritas)
 
-1) Putuskan arsitektur default (tanpa Service Bus) dan refactor `overview_integration.md` agar no‑bus menjadi jalur utama; pindahkan ASB ke opsi lanjutan. Update bagian terkait di `overview_design.md`.
-2) Tetapkan konvensi final untuk CaseStatus dan nama kolom kasus (`status` vs `state`), lalu sinkronkan lintas dokumen (schema, API, checklists, prompts). Disarankan menggunakan `cases.status`.
-3) Selesaikan gap schema: tambah `start_date/end_date` jika diperlukan, atau hapus dari overview bila tidak dipakai. Tambahkan juga indeks dan enum constraints sesuai rekomendasi `schema.md`.
-4) Rapikan `master_pm.md` dan `overview_design.md` dengan menghapus log chat dan referensi dokumen yang tidak ada.
-5) Tambahkan prompt khusus OTP pasien (bila tidak menggabungkannya ke `auth_module_prompt.md`) agar agen AI tidak melewatkan flow OTP.
+1) Tetapkan konvensi final untuk CaseStatus dan nama kolom kasus (`status` vs `state`), lalu sinkronkan lintas dokumen (schema, API, checklists, prompts). Disarankan menggunakan `cases.status`.
+2) Selesaikan gap schema: tambah `start_date/end_date` jika diperlukan, atau hapus dari overview bila tidak dipakai. Tambahkan juga indeks dan enum constraints sesuai rekomendasi `schema.md`.
+3) Rapikan `master_pm.md` dan `overview_design.md` dengan menghapus log chat dan referensi dokumen yang tidak ada.
+4) Tambahkan prompt khusus OTP pasien (bila tidak menggabungkannya ke `auth_module_prompt.md`) agar agen AI tidak melewatkan flow OTP.
 
 ## Bukti Rujukan
 

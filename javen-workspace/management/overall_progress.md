@@ -25,13 +25,13 @@ Dokumen ini merangkum progres seluruh modul dan tahapan integrasi.
 - Endpoint JWT tenaga kesehatan `/auth/login` dan `/auth/me` tersedia dengan middleware verifikasi Bearer token + RBAC `requireRole`.
 - Approval dokter pada kasus `WAITING_DOCTOR` sekarang menghitung triage final dan memicu generator tugas follow-up 7 hari (MILD/MODERATE) sekaligus membersihkan tugas bila status berubah ke SEVERE.
 - Webhook teks pasien memicu `nluService` (Azure Text Analytics) untuk menyimpan skor gejala `severity_symptom` langsung ke tabel `symptoms`.
-- Vision service menggunakan Azure Computer Vision (jika kredensial & SAS tersedia) untuk menetapkan marker dan S_i; fallback lokal tetap tersedia.
+- Vision service kini memakai GPT-4o multimodal (image_url) untuk menetapkan marker, ringkasan, dan S_i; fallback manual markers tetap tersedia bila URL/akses API gagal.
 - Application Insights client disiapkan untuk trace dan metric dengan auto-collect; logger dan error handler mengirim telemetri saat connection string tersedia.
 
 ## Hambatan & Mitigasi
 
-- Hambatan: Keputusan final arsitektur dengan/atau tanpa Service Bus (mempengaruhi tahap 07).
-- Mitigasi: Sediakan cabang tugas untuk kedua opsi; konfirmasi pilihan sebelum implementasi worker.
+- Hambatan: Pipeline tanpa message bus perlu pola retry/idempoten yang matang sebelum traffic tinggi.
+- Mitigasi: Dokumentasikan strategi retry dan locking di checklist 07, tambah uji beban ringan untuk memastikan tidak ada duplikasi data.
 - Hambatan: Kredensial Azure Storage belum tersedia sehingga endpoint media hanya merespons 503 dan verifikasi SAS belum dapat dilakukan.
 - Mitigasi: Provision Storage account atau gunakan Azurite sementara untuk pengujian lokal.
 

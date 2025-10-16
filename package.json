@@ -22,17 +22,17 @@
   },
   "homepage": "https://github.com/breathyy/breathy-be#readme",
   "dependencies": {
-    "@azure/ai-text-analytics": "^5.1.0",
-    "@azure/cognitiveservices-computervision": "^8.2.0",
-    "@azure/ms-rest-azure-js": "^2.1.0",
     "@azure/storage-blob": "^12.22.0",
-  "applicationinsights": "^2.9.10",
+    "applicationinsights": "^3.0.0",
     "@prisma/client": "^6.17.1",
     "bcryptjs": "^3.0.2",
+    "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
+    "openai": "^4.58.1",
+    "express-rate-limit": "^7.3.1",
     "pg": "^8.16.3"
   },
   "devDependencies": {

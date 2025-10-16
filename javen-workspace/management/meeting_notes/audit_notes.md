@@ -12,4 +12,4 @@ Ketidaksesuaian yang dikoreksi:
 
 Tindak lanjut:
 - Saat implementasi, pastikan unit test untuk transisi state & perhitungan skor.
-- Review kembali kebutuhan no-bus vs Service Bus pada tahap 07 sesuai keputusan arsitektur final.
+- Dokumentasikan pola orkestrasi tanpa message bus pada tahap 07 dan pastikan checklist terkait sudah diperbarui.

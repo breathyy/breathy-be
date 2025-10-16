@@ -1,0 +1,8 @@
+Send a message
+Businesses can reply with free-form messages within 24 hour of a user initiating a conversation or replying to a business-initiated message template.
+This field can not be empty
+
+const MessageClient = require("@azure-rest/communication-messages").default;
+
+const connectionString = "endpoint=https://breathy-bot.asiapacific.communication.azure.com/;accesskey=AWoI2qWq9Ou1sIF8RyMjvK7Jh9acsXa6jPoJeSF8bNXJBysn0woBJQQJ99BJACULyCpho4xYAAAAAZCSMNob";
+const client = M

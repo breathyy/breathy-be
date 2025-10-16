@@ -16,7 +16,7 @@ Rujukan: [overview_integration.md](../../overview_integration.md)
 
 ## Catatan
 
-- Endpoint `/chat/incoming` kini memanggil `chatService.processIncomingMessage`; ACS masih belum dikonfigurasi sehingga pengujian menunggu kredensial dan tunnel publik.
-- Stub outbound util tersedia di `src/services/acs.service.js`; fungsi `sendWhatsAppText` menyiapkan payload dan mencatat pesan keluar sebagai pending sampai kredensial ACS aktif. Endpoint OTP memakai util ini dengan opsi dry-run bila ACS belum siap.
-- [ ] Instal ACS SDK atau gunakan REST sebagai fallback; set `.env` ACS_CONNECTION_STRING, ACS_WHATSAPP_NUMBER.
+- Endpoint `/chat/incoming` kini memanggil `chatService.processIncomingMessage`; pastikan Event Grid/Router ACS mengarah ke URL publik backend.
+- Outbound util `src/services/acs.service.js` sekarang menandatangani permintaan REST WhatsApp (preview API 2023-11-15). Set variabel `.env`: `ACS_CONNECTION_STRING`, `ACS_WHATSAPP_NUMBER`, serta `ACS_CHANNEL_ID` (ID channel registration WhatsApp). Jika channel id berbeda dengan nomor, gunakan GUID dari portal Azure.
+- Validasi manual: kirim pesan WhatsApp ke nomor ACS → periksa bahwa backend menerima payload dan menyimpan `chat_messages`; kirim balasan dari backend (`sendWhatsAppText`) dan cek status response ACS (jika gagal, catat HTTP status/body pada log).
 - [ ] Outbound OTP via ACS; untuk media inbound, unduh dan unggah ke Blob via `blobService`.

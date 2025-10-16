@@ -1,11 +1,19 @@
 const express = require('express');
 const caseController = require('../controllers/case.controller');
 const caseImageController = require('../controllers/case-image.controller');
+const caseChatController = require('../controllers/case-chat.controller');
 const authMiddleware = require('../middlewares/auth.middleware');
 
 const router = express.Router();
 
 router.use(authMiddleware.authenticate);
+
+router.get(
+	'/:caseId/chat',
+	authMiddleware.requireRole('DOCTOR', 'HOSPITAL', 'PATIENT'),
+	caseChatController.listCaseChat
+);
+router.post('/:caseId/chat', authMiddleware.requireRole('PATIENT'), caseChatController.createPatientMessage);
 
 router.get('/:caseId', authMiddleware.requireRole('DOCTOR', 'HOSPITAL'), caseController.getCaseDetail);
 router.post('/:caseId/approve', authMiddleware.requireRole('DOCTOR'), caseController.approveCase);

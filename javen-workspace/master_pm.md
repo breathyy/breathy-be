@@ -87,7 +87,7 @@ Tetap sama seperti versi sebelumnya, namun prompt manajemen juga harus memanfaat
 - Berikan penjelasan yang sangat rinci dalam setiap dokumen design, checklist, dan prompt. Gunakan sitasi dari sumber PDF Breathy untuk mendukung perhitungan skor dan alur state machine.
 - Gunakan bahasa Indonesia yang baku, hindari tabel untuk deskripsi panjang; gunakan paragraf yang jelas.
 - Kaitkan dokumen satu sama lain dengan tautan relatif. Contoh: di prompt untuk `triageService`, rujuk `../design/algorithms/ensemble_triage.md` dan `../management/checklists/checklist_triage_bot.md`.
-- Pastikan setiap perubahan desain akibat penghapusan Service Bus tercermin dalam checklist dan prompt, terutama pada bagian pipeline antrian.
+- Pastikan dokumen konsisten dengan arsitektur tanpa message bus; soroti pola orkestrasi pada checklist 07.
 
 ## 6. Hasil Akhir
 
@@ -141,7 +141,7 @@ Selain per modul, buat file checklist_integration_flow.md atau sebuah folder int
 
 06_nlu_vision.md – tugas pengaturan Copilot Studio dan Computer Vision, implementasi nluService & visionService, serta uji inference.
 
-07_queue_pipeline.md – (jika arsitektur menggunakan Service Bus) tugas provisioning queue, menulis worker, memproses alur ingest → AI → notify. Jika arsitektur tanpa bus (default), ikuti adaptasi pada bagian tanpa-ASB di `overview_integration.md`.
+07_queue_pipeline.md – tugas merinci orkestrasi workflow tanpa message bus: idempoten, retry, dan mekanisme pending job sesuai `overview_integration.md`.
 
 08_triage_engine.md – tugas implementasi triage engine & state machine, update cases.status.
 
@@ -189,7 +189,7 @@ Gunakan bahasa Indonesia yang baku, hindari tabel untuk deskripsi panjang; gunak
 
 Kaitkan dokumen satu sama lain dengan tautan relatif. Contoh: di prompt untuk triageService, rujuk ../design/algorithms/ensemble_triage.md dan ../management/checklists/checklist_triage_bot.md.
 
-Pastikan setiap perubahan desain akibat penghapusan Service Bus tercermin dalam checklist dan prompt, terutama pada bagian pipeline antrian.
+Pastikan seluruh dokumen terbarui mengikuti arsitektur tanpa message bus dan sorot pola orkestrasi di pipeline antrian.
 
 6. Hasil Akhir
 

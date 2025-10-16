@@ -1,8 +1,6 @@
 # Overview Integrasi & Urutan Implementasi Breathy
 
-Dokumen ini menyusun urutan langkah integrasi yang jelas dan dapat dieksekusi dari lingkungan pengembangan lokal hingga produksi di Azure, berdasarkan arsitektur yang sudah didefinisikan. Fokusnya: apa yang dikerjakan dulu, layanan Azure mana yang perlu didaftarkan, bagaimana menghubungkan, dan bagaimana memverifikasi setiap tahap.
-
-Catatan: Default arsitektur untuk MVP TIDAK menggunakan Azure Service Bus (ASB). Jalur dengan ASB disediakan sebagai opsi skalabilitas dan tercantum pada bagian opsional di akhir.
+Dokumen ini menyusun urutan langkah integrasi yang jelas dan dapat dieksekusi dari lingkungan pengembangan lokal hingga produksi di Azure, berdasarkan arsitektur yang sudah didefinisikan. Fokusnya: apa yang dikerjakan dulu, layanan Azure mana yang perlu didaftarkan, bagaimana menghubungkan, dan bagaimana memverifikasi setiap tahap. Arsitektur resmi Breathy kini mengandalkan orkestrasi langsung di backend dan database tanpa message bus tambahan.
 
 ## Ringkasan Tahapan (High-Level Roadmap)
 
@@ -11,8 +9,8 @@ Catatan: Default arsitektur untuk MVP TIDAK menggunakan Azure Service Bus (ASB).
 3) Skeleton Backend & Health Check
 4) Azure Storage (Blob) & Media Pipeline
 5) Azure Communication Services (WhatsApp) & Webhook
-6) NLU (Copilot Studio/LUIS) & Vision (Cognitive Services)
-7) Worker Pipeline (opsional – dengan Azure Service Bus)
+6) NLU (OpenAI) & Vision (Cognitive Services)
+7) Orkestrasi Workflow Tanpa Message Bus
 8) Triage Engine & State Machine Wiring
 9) Observabilitas (Application Insights) & Logging
 10) Keamanan Awal (.env, JWT, RBAC Storage)
@@ -38,10 +36,8 @@ Variabel lingkungan (contoh, sesuaikan dengan implementasi):
 - APP_PORT, NODE_ENV, JWT_SECRET
 - DATABASE_URL (PostgreSQL connection string)
 - AZURE_STORAGE_CONNECTION_STRING, STORAGE_CONTAINER
-- AZURE_CV_ENDPOINT, AZURE_CV_KEY (Computer Vision)
-- COPILOT_ENDPOINT, COPILOT_KEY (atau LUIS/Language API)
+- OPENAI_KEY, OPENAI_MODEL (model chat completions + vision GPT-4o)
 - ACS_CONNECTION_STRING, ACS_WHATSAPP_NUMBER (untuk outbound)
-- (opsional untuk ASB) SERVICE_BUS_CONNECTION_STRING, SB_INGEST_QUEUE, SB_AI_QUEUE, SB_NOTIFY_QUEUE
 - APPINSIGHTS_CONNECTION_STRING
 - TRIAGE_ALPHA, TRIAGE_THRESHOLDS (mis. 0.4|0.7)
 
@@ -101,7 +97,7 @@ Tujuan: Menerima dan mengirim pesan WA.
 
 - Provision Azure Communication Services (ACS). Aktifkan kanal WhatsApp (ikuti tahapan verifikasi Meta jika diperlukan; untuk sandbox gunakan nomor uji yang disediakan).
 - Konfigurasikan inbound webhook ACS mengarah ke endpoint backend (mis. `POST /chat/incoming`). Untuk dev, gunakan tunneling (ngrok/Dev Tunnels) agar endpoint lokal publik.
-- Implementasi `chatController` (mendeteksi teks vs media, mengekstrak metadata, menyimpan referensi ke `cases`, dan memanggil service terkait secara langsung untuk pemrosesan). Jika memilih arsitektur dengan ASB, lihat bagian 7 untuk mem-publish ke `ingest-queue` via messaging service.
+- Implementasi `chatController` (mendeteksi teks vs media, mengekstrak metadata, menyimpan referensi ke `cases`, dan memanggil service terkait secara langsung untuk pemrosesan). Pastikan operasi idempoten agar pengiriman ulang webhook tidak menggandakan data.
 - Implementasi outbound (opsional tahap ini): fungsi utilitas mengirim pesan teks ke user untuk konfirmasi OTP/follow-up.
 
 Output verifikasi:
@@ -110,33 +106,34 @@ Output verifikasi:
 
 ---
 
-## 6) NLU (Copilot Studio/LUIS) & Vision (Cognitive Services)
+## 6) NLU & Vision (OpenAI GPT-4o)
 
 Tujuan: Mendapatkan skor S_s dan S_i terpisah.
 
-- NLU: Siapkan Copilot Studio/LUIS dengan intent dan entitas (fever_status, onset_days, dyspnea, comorbidity, other_symptoms). Simpan endpoint + key di `.env`. Implementasi `nluService` untuk memanggil API dan normalisasi respon sesuai desain.
-- Vision: Provision Azure Computer Vision. Simpan endpoint + key. Implementasi `visionService` untuk QC (blur/brightness) dan ekstraksi marker (warna, bercak darah, viskositas). Simpan skor dan metadata ke `images`.
+- NLU: Siapkan kredensial OpenAI (Chat Completions). Simpan `OPENAI_KEY` dan `OPENAI_MODEL` di `.env`. Implementasi `nluService` untuk memanggil model, memaksa keluaran JSON terstruktur (fever/onset/dyspnea/comorbidity + confidence/rationale), lalu normalisasi ke skema symptoms dan perbarui `cases.triage_metadata`.
+- Vision: Gunakan GPT-4o multimodal melalui endpoint Chat Completions dengan konten `image_url`. `visionService` menggabungkan marker manual + hasil GPT (confidence, rationale, summary) untuk menghitung S_i dan sputum category. Simpan metadata di `images.markers` dan `cases.triage_metadata.lastVisionAnalysis`.
 
 Output verifikasi:
 
 - Panggilan NLU pada teks contoh mengembalikan entitas + skor S_s tersimpan di `symptoms`.
-- Panggilan Vision pada file contoh mengembalikan marker + skor S_i tersimpan di `images`.
+- Panggilan Vision pada file contoh (URL publik) mengembalikan marker + skor S_i tersimpan di `images`.
 
 ---
 
-## 7) Worker Pipeline (opsional – dengan Azure Service Bus)
+## 7) Orkestrasi Workflow Tanpa Message Bus
 
-Tujuan: Memisahkan ingestion, AI processing, dan notifikasi dengan antrian.
+Tujuan: Memastikan pipeline teks dan gambar berjalan konsisten tanpa komponen message bus eksternal.
 
-- Provision Service Bus Namespace dan buat 3 queue: `ingest-queue`, `ai-queue`, `notification-queue`.
-- Implementasi `messagingService` (producer/consumer) dengan retry dan dead-letter awareness.
-- Implementasi `ingestWorker`: konsumsi `ingest-queue`, bedakan teks/gambar → panggil `nluService`/`visionService` → simpan ke DB → kirim case_id ke `ai-queue`.
-- Implementasi `triageWorker`: konsumsi `ai-queue`, cek ketersediaan `symptoms` & `images` → hitung S = α*S_i + (1-α)*S_s → update `cases.severity_*` dan `cases.status` → kirim event ke `notification-queue`.
-- Implementasi `notifyWorker`: konsumsi `notification-queue` → kirim pesan status ke user/doctor (via ACS) atau e‑mail bila relevan.
+- Tetapkan kontrak idempoten di layanan inti (`chatService`, `nluService`, `visionService`, `triageService`) sehingga pemanggilan ulang aman dan transaksional.
+- Gunakan transaksi database serta flag status (mis. `cases.triage_metadata`) untuk menandai komponen yang sudah selesai dan menghindari double-processing.
+- Untuk pekerjaan yang menunda (mis. re-evaluasi triage setelah citra masuk), gunakan job queue ringan berbasis database/cron (contoh: tabel `pending_jobs`) atau scheduler Node seperti BullMQ + Redis lokal.
+- Pastikan `chatController` memanggil NLU/Vision secara sinkron atau memasukkan tugas ke job queue internal bila prosesnya berat.
+- Notifikasi dokter dan pasien dipicu langsung oleh backend begitu triage final tersedia; catat riwayat pengiriman pada `chat_messages` untuk audit.
 
 Output verifikasi:
 
-- Saat pesan WA masuk, alur data mengalir dari `ingest-queue` → NLU/Vision → `ai-queue` → triage → `notification-queue` → pesan keluar/sinyal ke dokter.
+- Pesan teks dan gambar yang masuk langsung menghasilkan entri `symptoms`/`images` dan memperbarui kasus tanpa antrean eksternal.
+- Retry manual (memanggil ulang endpoint) tidak membuat duplikasi data.
 
 ---
 
@@ -159,8 +156,8 @@ Output verifikasi:
 Tujuan: Telemetri siap untuk E2E troubleshooting.
 
 - Provision Application Insights. Tambahkan SDK/telemetry ke app dan workers.
-- Log metrik: state_transition_duration, ai_response_time, doctor_action_latency, error rate, dan queue_length (jika menggunakan ASB). Tambahkan correlation ID per case.
-- Buat alert standar (mis. error ratio > Y; jika menggunakan ASB, tambahkan alert backlog `ai-queue` > X).
+- Log metrik: state_transition_duration, ai_response_time, doctor_action_latency, error rate, dan pending_job_count (jika memakai job queue internal). Tambahkan correlation ID per case.
+- Buat alert standar (mis. error ratio > Y, latency Vision/Text > Z, backlog pending job internal > N).
 
 Output verifikasi:
 
@@ -189,7 +186,7 @@ Tujuan: Aplikasi berjalan di Azure App Service skala kecil dulu.
 - Tambahkan Dockerfile multi-stage untuk app (dan workers jika proses terpisah) atau gunakan PM2/Procfile.
 - Provision Azure Container Registry (ACR); build & push image.
 - Provision Azure App Service (Linux) untuk API; set App Settings (semua env var yang diperlukan). Untuk workers, gunakan App Service tambahan atau Azure Container Apps.
-- Hubungkan App Service ke Postgres/Storage (dan Service Bus bila dipakai) dengan connection string di konfigurasi.
+- Hubungkan App Service ke Postgres dan Storage dengan connection string di konfigurasi.
 - Update webhook ACS agar mengarah ke domain App Service produksi/staging.
 
 Output verifikasi:
@@ -202,7 +199,7 @@ Output verifikasi:
 
 Tujuan: Mengeraskan konfigurasi produksi.
 
-- Provision Azure Key Vault dan pindahkan secrets (DB, ACS, CV, JWT, dan Service Bus jika dipakai). Gunakan Managed Identity untuk akses KV dari App Service.
+- Provision Azure Key Vault dan pindahkan secrets (DB, ACS, CV, JWT). Gunakan Managed Identity untuk akses KV dari App Service.
 - Atur firewall Postgres agar hanya menerima koneksi dari App Service/Private Endpoint.
 - Review kebijakan retensi log; aktifkan enkripsi di Storage dan pastikan SAS scopes ketat.
 - Implementasi audit logging untuk akses data sensitif (consent_logs, doctor_actions).
@@ -227,21 +224,6 @@ Tujuan: Memastikan jalur utama berfungsi dari WA hingga dokter.
 Output verifikasi:
 
 - Semua jalur uji lulus. Tidak ada error kritis di logs. Metrik dalam batas normal.
-
----
-
-## Catatan Alternatif: Tanpa Azure Service Bus
-
-Jika memutuskan tidak menggunakan ASB (mis. arsitektur lebih sederhana di awal):
-
-- Gantikan queue dengan eksekusi sinkron/asinkron terkoordinasi di proses backend atau gunakan job queue ringan (BullMQ + Redis). 
-- `chatController` langsung memanggil `nluService`/`visionService` (atau menambah job di Redis queue). 
-- `triageService` dipanggil setelah kedua hasil tersedia; simpan status antar hasil di DB (idempoten).
-- Notifikasi dokter/user dipicu langsung setelah triage.
-
-Konsekuensi:
-
-- Lebih sederhana untuk MVP, tetapi skalabilitas & isolasi beban lebih rendah dibanding ASB. Migrasi ke ASB dapat dilakukan dengan menukar layer messagingService di kemudian hari.
 
 ---
 

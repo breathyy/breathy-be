@@ -1,15 +1,8 @@
-const { ComputerVisionClient } = require('@azure/cognitiveservices-computervision');
-const { CognitiveServicesCredentials } = require('@azure/ms-rest-azure-js');
+const OpenAI = require('openai');
 const config = require('../config/env.config');
+const { clampConfidence } = require('../utils/triage-metadata');
 
-let visionClient;
-
-const keywordMappings = {
-  GREEN: ['green', 'moss', 'mould', 'mold'],
-  BLOOD_TINGED: ['blood', 'bloody', 'red', 'hematoma'],
-  VISCOUS: ['mucus', 'phlegm', 'sputum', 'thick', 'viscous'],
-  CLEAR: ['clear', 'transparent', 'clean']
-};
+let openAiClient;
 
 const weights = {
   GREEN: 0.4,
@@ -18,141 +11,261 @@ const weights = {
   CLEAR: 0.1
 };
 
-const normalizeMarkers = (input) => {
+const VALID_SPUTUM_CATEGORIES = ['GREEN', 'BLOOD_TINGED', 'VISCOUS', 'CLEAR', 'UNKNOWN'];
+
+const getClient = () => {
+  if (!config.openAiKey) {
+    throw new Error('OpenAI not configured');
+  }
+  if (!openAiClient) {
+    openAiClient = new OpenAI({ apiKey: config.openAiKey });
+  }
+  return openAiClient;
+};
+
+const sanitizeText = (value, max = 400) => {
+  if (!value) {
+    return null;
+  }
+  return String(value).trim().slice(0, max);
+};
+
+const toMarkerEntry = (value, defaultSource = 'MODEL') => {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === 'number' || typeof value === 'string') {
+    const confidence = clampConfidence(value);
+    if (confidence === null) {
+      return null;
+    }
+    return {
+      confidence,
+      source: defaultSource
+    };
+  }
+  if (typeof value === 'object') {
+    const confidence = clampConfidence(value.confidence ?? value.score ?? value.value);
+    if (confidence === null) {
+      return null;
+    }
+    const entry = {
+      confidence,
+      source: sanitizeText(value.source || value.provider || defaultSource, 80)
+    };
+    const rationale = sanitizeText(value.rationale || value.reason || value.summary || value.notes, 400);
+    if (rationale) {
+      entry.rationale = rationale;
+    }
+    if (Array.isArray(value.keywords)) {
+      const keywords = value.keywords
+        .map((item) => sanitizeText(item, 60))
+        .filter(Boolean)
+        .slice(0, 6);
+      if (keywords.length > 0) {
+        entry.keywords = keywords;
+      }
+    }
+    return entry;
+  }
+  return null;
+};
+
+const normalizeMarkers = (input, defaultSource = 'MODEL') => {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     return {};
   }
   return Object.entries(input).reduce((acc, [key, value]) => {
-    acc[key.toUpperCase()] = Number(value);
+    const markerKey = String(key).toUpperCase();
+    const entry = toMarkerEntry(value, defaultSource);
+    if (!entry) {
+      return acc;
+    }
+    const existing = acc[markerKey];
+    if (!existing || (entry.confidence !== null && entry.confidence > existing.confidence)) {
+      acc[markerKey] = entry;
+    } else if (existing && entry.rationale && !existing.rationale) {
+      acc[markerKey] = {
+        ...existing,
+        rationale: entry.rationale
+      };
+    }
     return acc;
   }, {});
+};
+
+const mergeMarkerMaps = (primary, secondary) => {
+  const result = { ...primary };
+  Object.entries(secondary || {}).forEach(([marker, entry]) => {
+    const existing = result[marker];
+    if (!existing || (entry.confidence !== null && entry.confidence > existing.confidence)) {
+      result[marker] = { ...entry };
+    } else if (existing) {
+      const merged = { ...existing };
+      if (!merged.rationale && entry.rationale) {
+        merged.rationale = entry.rationale;
+      }
+      if (!merged.keywords && entry.keywords) {
+        merged.keywords = entry.keywords;
+      }
+      result[marker] = merged;
+    }
+  });
+  return result;
 };
 
 const calculateSi = (markers) => {
   const normalized = normalizeMarkers(markers);
   let numerator = 0;
   let denominator = 0;
-  Object.entries(normalized).forEach(([key, value]) => {
-    if (!weights[key]) {
+  Object.entries(weights).forEach(([marker, weight]) => {
+    const entry = normalized[marker];
+    if (!entry) {
       return;
     }
-    const confidence = Number(value);
-    if (Number.isNaN(confidence) || confidence <= 0) {
+    const confidence = clampConfidence(entry.confidence);
+    if (confidence === null || confidence <= 0) {
       return;
     }
-    numerator += confidence * weights[key];
-    denominator += weights[key];
+    numerator += confidence * weight;
+    denominator += weight;
   });
   if (denominator === 0) {
     return null;
   }
-  const score = numerator / denominator;
-  return Math.max(0, Math.min(1, Number(score.toFixed(2))));
+  return Number((numerator / denominator).toFixed(2));
 };
 
-const isConfigured = () => {
-  return Boolean(config.azureCvEndpoint && config.azureCvEndpoint.trim() && config.azureCvKey && config.azureCvKey.trim());
-};
-
-const getClient = () => {
-  if (!isConfigured()) {
-    throw new Error('Azure Computer Vision not configured');
+const parseJsonBlock = (content) => {
+  if (!content || typeof content !== 'string') {
+    return null;
   }
-  if (!visionClient) {
-    const credentials = new CognitiveServicesCredentials(config.azureCvKey);
-    visionClient = new ComputerVisionClient(credentials, config.azureCvEndpoint);
+  const fenced = content.match(/```json\s*([\s\S]*?)```/i);
+  const payload = fenced ? fenced[1] : content;
+  try {
+    return JSON.parse(payload);
+  } catch {
+    return null;
   }
-  return visionClient;
 };
 
-const scoreForKeywords = (tagMap, keywords) => {
-  let score = 0;
-  keywords.forEach((keyword) => {
-    const value = tagMap.get(keyword);
-    if (value && value > score) {
-      score = value;
-    }
-  });
-  return score === 0 ? null : Number(Math.min(1, score).toFixed(2));
-};
-
-const buildTagMap = (analysis) => {
-  const tagMap = new Map();
-  (analysis.tags || []).forEach((tag) => {
-    if (!tag || !tag.name) {
-      return;
-    }
-    const key = tag.name.toLowerCase();
-    const confidence = Number(tag.confidence || 0);
-    const existing = tagMap.get(key) || 0;
-    tagMap.set(key, Math.max(existing, confidence));
-  });
-  const description = analysis.description || {};
-  (description.tags || []).forEach((tag) => {
-    if (!tag) {
-      return;
-    }
-    const key = String(tag).toLowerCase();
-    const existing = tagMap.get(key) || 0;
-    tagMap.set(key, Math.max(existing, 0.6));
-  });
-  (description.captions || []).forEach((caption) => {
-    if (!caption || !caption.text) {
-      return;
-    }
-    const words = caption.text.toLowerCase().split(/[^a-z]+/);
-    words.forEach((word) => {
-      if (!word) {
-        return;
-      }
-      const existing = tagMap.get(word) || 0;
-      tagMap.set(word, Math.max(existing, Number(caption.confidence || 0.5)));
-    });
-  });
-  return tagMap;
-};
-
-const deriveMarkersFromAnalysis = (analysis) => {
-  const tagMap = buildTagMap(analysis);
-  const markers = {};
-  Object.entries(keywordMappings).forEach(([marker, keywords]) => {
-    const score = scoreForKeywords(tagMap, keywords);
-    if (score !== null) {
-      markers[marker] = score;
-    }
-  });
-  return markers;
-};
-
-const analyseWithAzure = async (downloadUrl) => {
+const analyseWithOpenAi = async ({ downloadUrl }) => {
   const client = getClient();
-  const analysis = await client.analyzeImage(downloadUrl, {
-    visualFeatures: ['Tags', 'Description']
+  const completion = await client.chat.completions.create({
+    model: config.openAiModel || 'gpt-4o-mini',
+    temperature: 0,
+    max_tokens: 600,
+    messages: [
+      {
+        role: 'system',
+        content:
+          'You are a clinical imaging assistant. Analyse sputum or throat photos and return JSON with severity markers. Keys: markers (object with GREEN, BLOOD_TINGED, VISCOUS, CLEAR each having {confidence: 0-1, rationale?: string}), summary (string), recommendedCategory (GREEN|BLOOD_TINGED|VISCOUS|CLEAR|UNKNOWN). Respond ONLY with JSON.'
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: 'Evaluate this image and extract severity markers for sputum/throat analysis.'
+          },
+          {
+            type: 'image_url',
+            image_url: {
+              url: downloadUrl
+            }
+          }
+        ]
+      }
+    ]
   });
-  return deriveMarkersFromAnalysis(analysis);
+  const rawContent = completion?.choices?.[0]?.message?.content || '';
+  const parsed = parseJsonBlock(rawContent) || {};
+  const markers = parsed.markers && typeof parsed.markers === 'object' ? parsed.markers : {};
+  const summary = sanitizeText(parsed.summary, 600);
+  const recommendedCategoryRaw = sanitizeText(
+    parsed.recommendedCategory || parsed.dominantMarker || parsed.primaryMarker,
+    40
+  );
+  const recommendedCategory = recommendedCategoryRaw
+    ? VALID_SPUTUM_CATEGORIES.includes(recommendedCategoryRaw.toUpperCase())
+      ? recommendedCategoryRaw.toUpperCase()
+      : 'UNKNOWN'
+    : null;
+  return {
+    markers,
+    summary,
+    provider: 'OPENAI_GPT4O',
+    model: config.openAiModel || 'gpt-4o-mini',
+    raw: {
+      parsed,
+      rawExcerpt: sanitizeText(rawContent, 1000)
+    },
+    recommendedCategory
+  };
 };
 
-const analyseImage = async ({ markers, downloadUrl }) => {
-  let normalizedMarkers = normalizeMarkers(markers);
-  if (isConfigured() && downloadUrl) {
+const determineSputumCategory = (markers) => {
+  const normalized = normalizeMarkers(markers);
+  let bestCategory = 'UNKNOWN';
+  let bestConfidence = null;
+  Object.keys(weights).forEach((marker) => {
+    const entry = normalized[marker];
+    if (!entry) {
+      return;
+    }
+    const confidence = clampConfidence(entry.confidence);
+    if (confidence === null) {
+      return;
+    }
+    if (bestConfidence === null || confidence > bestConfidence) {
+      bestCategory = marker;
+      bestConfidence = confidence;
+    }
+  });
+  return {
+    category: bestCategory,
+    confidence: bestConfidence
+  };
+};
+
+const analyseImage = async ({ markers, downloadUrl, blobName }) => {
+  const timestamp = new Date().toISOString();
+  let combinedMarkers = normalizeMarkers(markers || {}, 'MANUAL_INPUT');
+  let aiResult = null;
+  if (downloadUrl && config.openAiKey) {
     try {
-      const azureMarkers = await analyseWithAzure(downloadUrl);
-      normalizedMarkers = normalizeMarkers({ ...normalizedMarkers, ...azureMarkers });
+      aiResult = await analyseWithOpenAi({ downloadUrl });
+      const modelMarkers = normalizeMarkers(aiResult.markers, 'OPENAI_GPT4O');
+      combinedMarkers = mergeMarkerMaps(combinedMarkers, modelMarkers);
     } catch {
-      normalizedMarkers = normalizeMarkers(normalizedMarkers);
+      // swallow and fallback to manual markers only
     }
   }
+  const normalizedMarkers = normalizeMarkers(combinedMarkers);
   const severityImageScore = calculateSi(normalizedMarkers);
-  const visionRanAt = severityImageScore === null ? null : new Date().toISOString();
+  const sputum = determineSputumCategory(normalizedMarkers);
+  const provider = aiResult
+    ? aiResult.provider
+    : Object.keys(normalizedMarkers).length > 0
+      ? 'MANUAL_INPUT'
+      : 'UNKNOWN';
   return {
     markers: normalizedMarkers,
     severityImageScore,
-    visionRanAt
+    visionRanAt: severityImageScore !== null || aiResult ? timestamp : null,
+    summary: aiResult ? aiResult.summary : null,
+    provider,
+    model: aiResult ? aiResult.model : null,
+    raw: aiResult ? aiResult.raw : {},
+    sputumCategory: aiResult && aiResult.recommendedCategory ? aiResult.recommendedCategory : sputum.category,
+    sputumCategoryConfidence: sputum.confidence,
+    blobName: blobName || null
   };
 };
 
 module.exports = {
   analyseImage,
   calculateSi,
-  isConfigured
+  normalizeMarkers,
+  determineSputumCategory
 };

@@ -34,11 +34,11 @@ Deskripsi ini menguraikan arsitektur lengkap sistem Breathy. Sistem terdiri dari
 - Azure Cognitive Services: analisis teks/visi komputer untuk menilai gejala dan gambar.
 - Interaksi: Melalui API; memproses data dari data warehouse dan mengembalikan hasil analisis (skor, marker) ke backend.
 
-### Alur Data (tanpa Service Bus)
-- Interaksi pengguna: WhatsApp/Web mengirim permintaan langsung ke backend (tanpa perantara Service Bus).
+### Alur Data (tanpa message bus)
+- Interaksi pengguna: WhatsApp/Web mengirim permintaan langsung ke backend tanpa perantara message bus.
 - Pengelolaan data: Backend menyimpan gejala, skor, dan gambar ke PostgreSQL/Blob.
 - Pemanggilan AI: Backend memanggil layanan AI; AI menggunakan data warehouse untuk kalibrasi; hasil dikirim kembali ke backend.
 - Pengembalian hasil: Backend mengolah hasil dan merespons via chatbot/web; kasus yang butuh verifikasi dikirim ke dokter/RS.
 - Penyimpanan & monitoring: Semua interaksi/hitung disimpan untuk monitoring, analisis, dan pelaporan.
 
-Dengan pendekatan ini, komponen Breathy terhubung langsung melalui backend, sehingga komunikasi antar layanan sederhana tanpa Azure Service Bus.
+Dengan pendekatan ini, komponen Breathy terhubung langsung melalui backend, sehingga komunikasi antar layanan sederhana tanpa message bus eksternal.

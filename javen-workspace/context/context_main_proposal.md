@@ -257,7 +257,7 @@ AI Inference | Azure Copilot Studio; Azure Cognitive Services | Image + NLU mode
 Database | Azure PostgreSQL | Case and metadata storage
 Blob Storage | Azure Blob Storage | Photo storage
 Dashboard | Next.js | Doctor verification interface and user chatbot interface
-Queue | Azure Service Bus (optional) | Buffer and scale transactions
+Workflow Orchestration | Node.js backend | Direct coordination without external message bus
 Monitoring | Azure Monitor | Monitor the application
 Figure 12. Table Technology Specification
 ```

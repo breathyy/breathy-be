@@ -3,7 +3,7 @@
 Purpose: make AI agents productive fast by codifying repo-specific patterns. Keep answers concise and cite the files below.
 
 ## Big picture
-- Workspace-first repo: `javen-workspace/` holds design, checklists, and prompts to scaffold a Node.js/Express + PostgreSQL backend with Azure integrations (Blob, ACS WhatsApp, Vision, Copilot Studio). Default: no Service Bus; ASB is optional for scale (see `overview_integration.md`).
+- Workspace-first repo: `javen-workspace/` holds design, checklists, and prompts to scaffold a Node.js/Express + PostgreSQL backend with Azure integrations (Blob, ACS WhatsApp, Vision, Copilot Studio). Orkestrasi dilakukan langsung di backend tanpa message bus eksternal.
 - CaseStatus (process) vs severity_class (triage result). Do not conflate. CaseStatus: IN_CHATBOT → WAITING_DOCTOR → MILD/MODERATE/SEVERE.
 
 ## Key files
@@ -26,7 +26,7 @@ Purpose: make AI agents productive fast by codifying repo-specific patterns. Kee
 - Structure: `controllers/`, `services/`, `routes/`, `models/`, `middlewares/`, `utils/`, `config/`.
 - Async/await + central error handler; structured logging (App Insights); never log PII. Media via SAS URLs.
 - RBAC roles: DOCTOR, HOSPITAL, ADMIN. Patient OTP flow is separate from provider login. State is WAITING_DOCTOR (exact).
-- Env: `overview_integration.md` lists APP_PORT, DATABASE_URL, AZURE_*, TRIAGE_ALPHA, TRIAGE_THRESHOLDS. ASB vars are optional.
+- Env: `overview_integration.md` lists APP_PORT, DATABASE_URL, AZURE_*, TRIAGE_ALPHA, TRIAGE_THRESHOLDS.
 
 ## Dev tips
 - No server yet—use the integration checklists to scaffold step‑by‑step. Add minimal ORM migrations that match schema.
@@ -35,7 +35,7 @@ Purpose: make AI agents productive fast by codifying repo-specific patterns. Kee
 ## Integrations
 - Blob: upload, SAS; store QC `quality_metrics` and markers in `images`.
 - ACS WhatsApp: inbound `POST /chat/incoming`; outbound for OTP and status messages.
-- Service Bus (optional for scale): ingest/ai/notify queues. Default is no‑bus; if chosen, follow `management/integration_checklists/07_queue_pipeline.md` and record the decision in `management/meeting_notes/context_audit.md`.
+- Workflow orchestration: lakukan sinkron/asinkron langsung di backend; gunakan job queue ringan bila perlu (lihat `management/integration_checklists/07_queue_pipeline.md`).
 
 ## Examples (from prompts)
 - Triage service: `services/triageService.js` (`calculateSeverity`, `applyDoctorApproval`, `transitionCaseState`) → `prompts/code/triage_service_prompt.md`.

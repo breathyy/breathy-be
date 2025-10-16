@@ -32,6 +32,13 @@ const parseConnectionString = (value) => {
   }, {});
 };
 
+const buildCaseBlobName = (caseId) => {
+  if (!caseId) {
+    return crypto.randomUUID();
+  }
+  return `cases/${caseId}/${crypto.randomUUID()}`;
+};
+
 const getBlobServiceClient = () => {
   if (!configured) {
     throw new Error('Storage connection not configured');
@@ -90,7 +97,7 @@ const buildBlobClient = (blobName) => {
 
 const createUploadUrl = async (caseId, contentType, fileSizeBytes) => {
   await ensureContainer();
-  const blobName = `cases/${caseId}/${crypto.randomUUID()}`;
+  const blobName = buildCaseBlobName(caseId);
   if (stubMode) {
     const expiresOn = new Date(Date.now() + 15 * 60 * 1000);
     return {
@@ -124,6 +131,38 @@ const createUploadUrl = async (caseId, contentType, fileSizeBytes) => {
     expiresAt: expiresOn.toISOString(),
     contentType,
     fileSizeBytes: fileSizeBytes || null
+  };
+};
+
+const uploadBuffer = async ({ caseId, buffer, contentType }) => {
+  if (!buffer || !(buffer instanceof Buffer)) {
+    const error = new Error('Buffer payload is required');
+    error.status = 400;
+    throw error;
+  }
+  await ensureContainer();
+  const blobName = buildCaseBlobName(caseId);
+  if (stubMode) {
+    return {
+      blobName,
+      blobUrl: `stub://${blobName}`,
+      contentType: contentType || 'application/octet-stream',
+      size: buffer.length
+    };
+  }
+  const blobClient = buildBlobClient(blobName);
+  const options = {};
+  if (contentType && typeof contentType === 'string') {
+    options.blobHTTPHeaders = {
+      blobContentType: contentType
+    };
+  }
+  await blobClient.uploadData(buffer, options);
+  return {
+    blobName,
+    blobUrl: blobClient.url,
+    contentType: contentType || null,
+    size: buffer.length
   };
 };
 
@@ -184,5 +223,6 @@ module.exports = {
   createUploadUrl,
   generateDownloadUrl,
   getBlobUrl,
-  getBlobProperties
+  getBlobProperties,
+  uploadBuffer
 };

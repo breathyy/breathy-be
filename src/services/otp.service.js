@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { getPrisma } = require('../config/prisma.config');
 const acsService = require('./acs.service');
+const authService = require('./auth.service');
 const { normalizePhone, ensureActiveCase } = require('./chat.service');
 
 const OTP_LENGTH = 6;
@@ -141,7 +142,16 @@ const verifyOtp = async ({ phone, otp }) => {
       caseStatus: activeCase.status
     };
   });
-  return result;
+  const session = authService.signPatientSession({
+    userId: result.userId,
+    phoneNumber: normalizedPhone,
+    caseId: result.caseId
+  });
+  return {
+    ...result,
+    token: session.token,
+    expiresIn: session.expiresIn
+  };
 };
 
 module.exports = {

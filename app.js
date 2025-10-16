@@ -1,5 +1,6 @@
 const express = require('express');
 const helmet = require('helmet');
+const cors = require('cors');
 const config = require('./src/config/env.config');
 const appInsightsService = require('./src/services/appInsightsService');
 const logger = require('./src/middlewares/logger.middleware');
@@ -10,6 +11,7 @@ const chatRoutes = require('./src/routes/chat.route');
 const caseRoutes = require('./src/routes/case.route');
 const taskRoutes = require('./src/routes/task.route');
 const referralRoutes = require('./src/routes/referral.route');
+const doctorRoutes = require('./src/routes/doctor.route');
 
 appInsightsService.setup();
 
@@ -17,6 +19,7 @@ const app = express();
 
 app.disable('x-powered-by');
 app.use(helmet());
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '1mb' }));
 app.use(logger);
 app.use(require('./src/middlewares/sanitize.middleware'));
@@ -35,6 +38,7 @@ app.use('/chat', chatRoutes);
 app.use('/cases', taskRoutes);
 app.use('/cases', caseRoutes);
 app.use('/referrals', referralRoutes);
+app.use('/doctor', doctorRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found' });
