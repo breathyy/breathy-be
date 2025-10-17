@@ -14,11 +14,16 @@ test('applyConversationOutcome sends assistant reply without escalating', async 
   const triageMetadata = {
     conversation: {}
   };
+  let updatePayload = null;
   const captured = [];
   const prisma = {
     cases: {
-      update: async () => {
-        throw new Error('should not update when no escalation');
+      update: async ({ data }) => {
+        updatePayload = data;
+        return {
+          ...caseRecord,
+          ...data
+        };
       }
     }
   };
@@ -39,10 +44,12 @@ test('applyConversationOutcome sends assistant reply without escalating', async 
     }
   });
 
-  assert.equal(captured.length, 1);
+  assert.equal(captured.length, 2);
   assert.equal(captured[0].metadata.reason, 'ASSISTANT_REPLY');
-  assert.equal(result.updatedCase, caseRecord);
-  assert.equal(result.triageMetadata, triageMetadata);
+  assert.equal(captured[1].metadata.reason, 'REQUEST_IMAGE');
+  assert.ok(updatePayload);
+  assert.ok(updatePayload.triage_metadata.conversation.waitingForImage);
+  assert.ok(result.triageMetadata.conversation.waitingForImage);
 });
 
 test('applyConversationOutcome escalates case and notifies patient', async () => {
@@ -50,7 +57,15 @@ test('applyConversationOutcome escalates case and notifies patient', async () =>
     id: 'case-2',
     status: 'IN_CHATBOT',
     triage_metadata: {
-      conversation: {}
+      conversation: {},
+      dataCompleteness: {
+        missingSymptoms: [],
+        readyForPreprocessing: true,
+        imageProvided: true,
+        imageRecommended: true,
+        needsMoreSymptoms: false,
+        updatedAt: new Date().toISOString()
+      }
     }
   };
   let updatePayload = null;

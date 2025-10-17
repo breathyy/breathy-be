@@ -12,6 +12,8 @@ const WELCOME_MESSAGE = 'Hai, aku Breathy! asisten kesehatan ISPA berbasis AI ka
 const IMAGE_REQUEST_MESSAGE =
   'Oke, supaya dokter bisa menilai lebih tepat, boleh bantu kirim foto dahak atau tenggorokan kamu? Kalau belum bisa atau belum nyaman, tinggal bilang ya.';
 const IMAGE_REQUEST_COOLDOWN_MS = 4 * 60 * 60 * 1000; // 4 jam penundaan sebelum minta ulang
+const IMAGE_REMINDER_MESSAGE =
+  'Terima kasih ya, aku masih butuh foto dahak atau tenggorokan kamu supaya dokter bisa menilai lebih akurat. Kalau belum bisa kirim, tinggal bilang juga gapapa.';
 
 const ensureUser = async (prisma, phoneNumber, displayName) => {
   const normalizedPhone = normalizePhone(phoneNumber);
@@ -316,8 +318,12 @@ const applyConversationOutcome = async ({
   const imageProvided = Boolean(dataCompleteness && dataCompleteness.imageProvided) || Boolean(imageStats && imageStats.total > 0);
   const now = new Date();
   const nowIso = now.toISOString();
+  let wantsImage = conversation.recommendImage;
+  if (wantsImage === undefined || wantsImage === null) {
+    wantsImage = !imageProvided;
+  }
 
-  if (conversation.recommendImage === false) {
+  if (wantsImage === false) {
     if (!existingImageRequest || existingImageRequest.status !== 'DECLINED') {
       const declined = {
         status: 'DECLINED',
@@ -330,26 +336,32 @@ const applyConversationOutcome = async ({
       metadataDirty = true;
     }
     conversationMeta.recommendImage = false;
-  } else if (conversation.recommendImage === true && !imageProvided) {
+    conversationMeta.waitingForImage = false;
+    metadataDirty = true;
+  } else if (!imageProvided) {
     const lastRequestedAt = existingImageRequest && existingImageRequest.requestedAt
       ? new Date(existingImageRequest.requestedAt)
       : null;
     const cooldownActive =
       lastRequestedAt && now.getTime() - lastRequestedAt.getTime() < IMAGE_REQUEST_COOLDOWN_MS;
-    if (!cooldownActive) {
-      await sendIfPossible(IMAGE_REQUEST_MESSAGE, {
-        reason: 'REQUEST_IMAGE',
+    if (!existingImageRequest || existingImageRequest.status !== 'REQUESTED' || !cooldownActive) {
+      const requestReason = existingImageRequest ? 'REQUEST_IMAGE_REMINDER' : 'REQUEST_IMAGE';
+      const outboundMessage = existingImageRequest ? IMAGE_REMINDER_MESSAGE : IMAGE_REQUEST_MESSAGE;
+      await sendIfPossible(outboundMessage, {
+        reason: requestReason,
         uiVariant: 'IMAGE_REQUEST',
         brand: 'breathy'
       });
       conversationMeta.imageRequest = {
         status: 'REQUESTED',
-        requestedAt: nowIso,
+        requestedAt: existingImageRequest && existingImageRequest.requestedAt ? existingImageRequest.requestedAt : nowIso,
         updatedAt: nowIso
       };
       metadataDirty = true;
     }
     conversationMeta.recommendImage = true;
+    conversationMeta.waitingForImage = true;
+    metadataDirty = true;
   } else if (imageProvided && (!existingImageRequest || existingImageRequest.status !== 'FULFILLED')) {
     const fulfilled = {
       status: 'FULFILLED',
@@ -362,6 +374,28 @@ const applyConversationOutcome = async ({
     conversationMeta.imageRequest = fulfilled;
     metadataDirty = true;
     conversationMeta.recommendImage = false;
+    conversationMeta.waitingForImage = false;
+  } else if (imageProvided) {
+    conversationMeta.recommendImage = false;
+    conversationMeta.waitingForImage = false;
+    metadataDirty = true;
+  }
+
+  let allowEscalation = conversation.shouldEscalate;
+  const imageRequestStatus = conversationMeta.imageRequest && typeof conversationMeta.imageRequest.status === 'string'
+    ? conversationMeta.imageRequest.status
+    : null;
+  const patientDeclinedImage = imageRequestStatus === 'DECLINED';
+  if (allowEscalation && !imageProvided && !patientDeclinedImage) {
+    allowEscalation = false;
+    if (!conversationMeta.waitingForImage) {
+      conversationMeta.waitingForImage = true;
+      metadataDirty = true;
+    }
+    if (conversationMeta.readyForDoctor) {
+      conversationMeta.readyForDoctor = false;
+      metadataDirty = true;
+    }
   }
 
   const recommendValue = Object.prototype.hasOwnProperty.call(conversationMeta, 'recommendImage')
@@ -382,7 +416,7 @@ const applyConversationOutcome = async ({
 
   const alreadyEscalated = Boolean(conversationMeta.escalatedAt) || caseRecord.status === 'WAITING_DOCTOR';
 
-  if (conversation.shouldEscalate && !alreadyEscalated) {
+  if (allowEscalation && !alreadyEscalated) {
     const metadataWithEscalation = {
       ...updatedMetadata,
       conversation: {

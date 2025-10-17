@@ -250,14 +250,26 @@ const registerImage = async ({
       fulfillment.requestedAt = existingImageRequest.requestedAt;
     }
     conversationMeta.imageRequest = fulfillment;
+    conversationMeta.waitingForImage = false;
+    conversationMeta.recommendImage = false;
     metadataForUpdate = {
       ...metadataForUpdate,
       conversation: {
         ...conversationMeta
       }
     };
-    metadataForUpdate = applyDataCompleteness(metadataForUpdate, fulfilledAt);
+  } else {
+    conversationMeta.waitingForImage = false;
+    conversationMeta.recommendImage = false;
+    metadataForUpdate = {
+      ...metadataForUpdate,
+      conversation: {
+        ...conversationMeta
+      }
+    };
   }
+
+  metadataForUpdate = applyDataCompleteness(metadataForUpdate, fulfilledAt);
 
   const caseUpdate = {
     triage_metadata: metadataForUpdate,
