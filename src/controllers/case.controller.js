@@ -2,6 +2,7 @@ const { getPrisma } = require('../config/prisma.config');
 const blobService = require('../services/blob.service');
 const triageService = require('../services/triage.service');
 const followupService = require('../services/followup.service');
+const chatService = require('../services/chat.service');
 const { toNullableDecimal, toNullableNumber } = require('../utils/prisma-helpers');
 const { REQUIRED_SYMPTOM_FIELDS } = require('../utils/triage-metadata');
 
@@ -271,6 +272,11 @@ const getCaseDetail = async (req, res, next) => {
           evaluation: result.evaluation
         }
       });
+      try {
+        await chatService.notifyDoctorReview({ caseRecord: result.caseRecord, evaluation: result.evaluation });
+      } catch (notifyError) {
+        console.error('Failed to deliver doctor review notification', notifyError);
+      }
     } catch (error) {
       next(error);
     }

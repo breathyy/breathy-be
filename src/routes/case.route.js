@@ -20,6 +20,11 @@ router.post(
 );
 router.post('/:caseId/chat', authMiddleware.requireRole('PATIENT'), caseChatController.createPatientMessage);
 
+router.post(
+	'/:caseId/chat/reset',
+	authMiddleware.requireRole('PATIENT'),
+	caseChatController.resetPatientConversation
+);
 router.get('/:caseId', authMiddleware.requireRole('DOCTOR', 'HOSPITAL'), caseController.getCaseDetail);
 router.post('/:caseId/approve', authMiddleware.requireRole('DOCTOR'), caseController.approveCase);
 router.post('/:caseId/images/upload-url', authMiddleware.requireRole('DOCTOR', 'HOSPITAL'), caseImageController.requestUploadUrl);

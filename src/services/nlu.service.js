@@ -13,6 +13,33 @@ const SYMPTOM_LABELS = {
   comorbidity: 'riwayat komorbiditas'
 };
 
+const TASK_DEFINITIONS = {
+  feverStatus: {
+    label: SYMPTOM_LABELS.feverStatus,
+    focus: 'Pastikan apakah pasien mengalami demam tinggi ≥38°C atau sensasi panas yang berulang.',
+    followUp: 'Kalau suhu tubuh pernah diukur, sebutkan angkanya ya.'
+  },
+  onsetDays: {
+    label: SYMPTOM_LABELS.onsetDays,
+    focus: 'Catat sudah berapa lama batuk berlangsung atau kapan mulai terasa.',
+    followUp: 'Boleh sebut kira-kira berapa hari atau sejak tanggal berapa.'
+  },
+  dyspnea: {
+    label: SYMPTOM_LABELS.dyspnea,
+    focus: 'Deteksi apakah pasien merasakan sesak, napas pendek, atau cepat lelah saat bernapas.',
+    followUp: 'Kalau ada, jelaskan situasinya kapan terasa sesaknya.'
+  },
+  comorbidity: {
+    label: SYMPTOM_LABELS.comorbidity,
+    focus: 'Ketahui riwayat penyakit penyerta seperti asma, diabetes, hipertensi, atau lainnya.',
+    followUp: 'Sebutkan jenis komorbiditasnya kalau ada.'
+  }
+};
+
+const TASK_ORDER = ['feverStatus', 'onsetDays', 'dyspnea', 'comorbidity'];
+const TASK_STATUSES = ['PENDING', 'ASKING', 'COLLECTED', 'CONFIRMED', 'CLARIFY'];
+const CONFIRM_STATES = ['NONE', 'REQUEST', 'CONFIRMED', 'REVISE'];
+
 const getClient = () => {
   if (!config.openAiKey) {
     throw new Error('OpenAI not configured');
@@ -46,6 +73,84 @@ const describeSymptomField = (field, value) => {
     return `${label} dilaporkan tidak ada`;
   }
   return null;
+};
+
+const buildInitialTaskState = () => {
+  const tasks = {};
+  TASK_ORDER.forEach((field) => {
+    tasks[field] = {
+      field,
+      status: 'PENDING',
+      lastUpdatedAt: null,
+      prompt: null,
+      latestAnswer: null
+    };
+  });
+  return tasks;
+};
+
+const ensureConversationState = (metadataConversation) => {
+  const base = metadataConversation && typeof metadataConversation === 'object' ? { ...metadataConversation } : {};
+  const tasks = base.tasks && typeof base.tasks === 'object' ? { ...base.tasks } : buildInitialTaskState();
+  TASK_ORDER.forEach((field) => {
+    if (!tasks[field] || typeof tasks[field] !== 'object') {
+      tasks[field] = buildInitialTaskState()[field];
+    } else {
+      tasks[field] = {
+        field,
+        status: TASK_STATUSES.includes(tasks[field].status) ? tasks[field].status : 'PENDING',
+        lastUpdatedAt: tasks[field].lastUpdatedAt || null,
+        prompt: tasks[field].prompt || null,
+        latestAnswer: tasks[field].latestAnswer || null,
+        value: tasks[field].value !== undefined ? tasks[field].value : null
+      };
+    }
+  });
+  return {
+    ...base,
+    tasks,
+    confirmationState: CONFIRM_STATES.includes(base.confirmationState) ? base.confirmationState : 'NONE',
+    lastReply: base.lastReply || null,
+    lastUpdatedAt: base.lastUpdatedAt || null,
+    readyForDoctor: Boolean(base.readyForDoctor),
+    escalatedAt: base.escalatedAt || null,
+    allowSmallTalk: base.allowSmallTalk !== undefined ? Boolean(base.allowSmallTalk) : true,
+    summary: base.summary || null,
+    planContext: base.planContext || null,
+    doctorReview: base.doctorReview || null
+  };
+};
+
+const serializeTaskState = (tasks) => {
+  const snapshot = {};
+  TASK_ORDER.forEach((field) => {
+    const current = tasks[field] || {};
+    snapshot[field] = {
+      status: current.status || 'PENDING',
+      latestAnswer: current.latestAnswer || null,
+      prompt: current.prompt || null,
+      value: current.value !== undefined ? current.value : null
+    };
+  });
+  return snapshot;
+};
+
+const buildTaskContextLines = (tasks) => {
+  return TASK_ORDER.map((field) => {
+    const definition = TASK_DEFINITIONS[field];
+    const task = tasks[field];
+    const status = task?.status || 'PENDING';
+    const answer = task?.latestAnswer;
+    const value = task?.value;
+    const parts = [`- ${definition.label}: status ${status}`];
+    if (value !== null && value !== undefined) {
+      parts.push(`nilai ${value}`);
+    }
+    if (answer) {
+      parts.push(`jawaban: ${answer}`);
+    }
+    return parts.join('; ');
+  }).join('\n');
 };
 
 const summarizeContext = (metadata) => {
@@ -89,62 +194,210 @@ const summarizeContext = (metadata) => {
   return summary;
 };
 
-const heuristicsExtract = (text) => {
-  const baseline = {
-    fields: {},
-    confidences: {},
-    rationales: {},
-    heuristicsSignals: [],
-    recommendImage: true
-  };
-  if (!text || typeof text !== 'string') {
-    return baseline;
+const fetchRecentTextMessages = async (prisma, caseId, limit = 8) => {
+  if (!prisma || !caseId) {
+    return [];
   }
-  const normalized = text.toLowerCase();
-  const { fields, confidences, rationales, heuristicsSignals } = baseline;
+  const records = await prisma.chat_messages.findMany({
+    where: { case_id: caseId, message_type: 'text' },
+    orderBy: { created_at: 'desc' },
+    take: limit,
+    select: {
+      content: true,
+      meta: true
+    }
+  });
+  return records.reverse();
+};
 
-  if (normalized.includes('demam') || normalized.includes('fever')) {
-    fields.feverStatus = true;
-    confidences.feverStatus = 0.4;
-    rationales.feverStatus = 'Keyword indicates fever >=38°C.';
-    heuristicsSignals.push('keyword:fever');
+const mapHistoryToMessages = (history, latestPatientText) => {
+  const messages = [];
+  if (Array.isArray(history)) {
+    history.forEach((entry) => {
+      const content = typeof entry.content === 'string' ? entry.content.trim() : '';
+      if (!content) {
+        return;
+      }
+      const direction = entry.meta && typeof entry.meta === 'object' ? entry.meta.direction : null;
+      const role = direction === 'OUTBOUND' ? 'assistant' : 'user';
+      messages.push({ role, content });
+    });
   }
-  const coughPattern =
-    normalized.match(/batuk(?:\s+selama)?\s+(\d{1,2})\s*(hari|day|days)/) ||
-    normalized.match(/cough(?:ing)?\s+(for\s+)?(\d{1,2})\s*(day|days)/);
-  if (coughPattern) {
-    const value = coughPattern[1] || coughPattern[2];
-    const days = Number(value);
-    if (!Number.isNaN(days)) {
-      fields.onsetDays = days;
-      confidences.onsetDays = 0.35;
-      rationales.onsetDays = 'Detected cough duration reference.';
-      heuristicsSignals.push('pattern:cough_duration');
+  if (latestPatientText) {
+    messages.push({ role: 'user', content: latestPatientText });
+  }
+  return messages.slice(-10);
+};
+
+const parseTaskStatuses = (payload) => {
+  const map = {};
+  if (!payload || typeof payload !== 'object') {
+    return map;
+  }
+  Object.entries(payload).forEach(([field, entry]) => {
+    if (!TASK_ORDER.includes(field)) {
+      return;
+    }
+    let status = null;
+    let prompt = null;
+    let latestAnswer = null;
+    let value = null;
+    if (typeof entry === 'string') {
+      status = entry.toUpperCase();
+    } else if (entry && typeof entry === 'object') {
+      const rawStatus = entry.status || entry.state || entry.phase;
+      if (typeof rawStatus === 'string') {
+        status = rawStatus.toUpperCase();
+      }
+      if (entry.prompt) {
+        prompt = sanitizeText(entry.prompt, 240);
+      }
+      if (entry.latestAnswer || entry.answer) {
+        latestAnswer = sanitizeText(entry.latestAnswer || entry.answer, 240);
+      }
+      if (Object.prototype.hasOwnProperty.call(entry, 'value')) {
+        value = entry.value;
+      }
+    }
+    if (!TASK_STATUSES.includes(status)) {
+      status = 'PENDING';
+    }
+    map[field] = {
+      status,
+      prompt,
+      latestAnswer,
+      value
+    };
+  });
+  return map;
+};
+
+const parseConversationExtras = (parsed) => {
+  const reply = sanitizeText(parsed?.reply, 900);
+  const taskStatus = parseTaskStatuses(parsed?.taskStatus || parsed?.tasks);
+  const confirmationRaw = parsed?.confirmation || {};
+  let confirmationState = 'NONE';
+  if (confirmationRaw && typeof confirmationRaw === 'object' && typeof confirmationRaw.state === 'string') {
+    const normalized = confirmationRaw.state.toUpperCase();
+    if (CONFIRM_STATES.includes(normalized)) {
+      confirmationState = normalized;
     }
   }
-  if (fields.onsetDays === undefined && (normalized.includes('batuk') || normalized.includes('cough'))) {
-    fields.onsetDays = null;
-    heuristicsSignals.push('keyword:cough');
+  const confirmationSummary = sanitizeText(
+    (confirmationRaw && (confirmationRaw.summary || confirmationRaw.message || confirmationRaw.notes)) || null,
+    400
+  );
+  const allowSmallTalk = parsed?.allowSmallTalk !== undefined ? Boolean(parsed.allowSmallTalk) : true;
+  const planContext = parsed?.planContext && typeof parsed.planContext === 'object' ? parsed.planContext : null;
+  const notes = Array.isArray(parsed?.notes)
+    ? parsed.notes.map((item) => sanitizeText(item, 200)).filter(Boolean)
+    : [];
+  const recommendImage =
+    typeof parsed?.recommendImage === 'boolean'
+      ? parsed.recommendImage
+      : typeof parsed?.requestImage === 'boolean'
+        ? parsed.requestImage
+        : undefined;
+  return {
+    replyMessage: reply || null,
+    taskStatus,
+    confirmationState,
+    confirmationSummary,
+    allowSmallTalk,
+    planContext,
+    notes,
+    recommendImage
+  };
+};
+
+const mergeConversationSnapshot = (metadata, analysis, timestampIso) => {
+  const base = metadata && typeof metadata === 'object' ? JSON.parse(JSON.stringify(metadata)) : {};
+  const conversation = ensureConversationState(base.conversation);
+  const incomingTasks = analysis?.conversation?.taskStatus || {};
+  TASK_ORDER.forEach((field) => {
+    const task = conversation.tasks[field];
+    const updates = incomingTasks[field] || {};
+    if (updates.status && TASK_STATUSES.includes(updates.status)) {
+      task.status = updates.status;
+    }
+    if (updates.prompt) {
+      task.prompt = updates.prompt;
+    }
+    if (updates.latestAnswer) {
+      task.latestAnswer = updates.latestAnswer;
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, 'value')) {
+      task.value = updates.value;
+    }
+    const incomingValue = analysis.fields[field];
+    if (incomingValue !== undefined && incomingValue !== null) {
+      task.value = field === 'onsetDays' ? toNumberOrNull(incomingValue) : incomingValue;
+      if (task.status === 'PENDING' || task.status === 'ASKING' || task.status === 'CLARIFY') {
+        task.status = 'COLLECTED';
+      }
+      if (!task.latestAnswer) {
+        task.latestAnswer = sanitizeText(String(incomingValue), 160);
+      }
+      task.lastUpdatedAt = timestampIso;
+    }
+    conversation.tasks[field] = task;
+  });
+
+  const confirmationState = analysis?.conversation?.confirmationState || conversation.confirmationState;
+  if (CONFIRM_STATES.includes(confirmationState)) {
+    conversation.confirmationState = confirmationState;
+  }
+  if (analysis?.conversation?.confirmationSummary) {
+    conversation.summary = analysis.conversation.confirmationSummary;
+  }
+  if (analysis?.conversation?.allowSmallTalk !== undefined) {
+    conversation.allowSmallTalk = Boolean(analysis.conversation.allowSmallTalk);
+  }
+  if (analysis?.conversation?.planContext) {
+    conversation.planContext = analysis.conversation.planContext;
+  }
+  if (analysis?.conversation?.recommendImage !== undefined) {
+    conversation.recommendImage = Boolean(analysis.conversation.recommendImage);
+  }
+  if (analysis.replyMessage) {
+    conversation.lastReply = analysis.replyMessage;
+  }
+  conversation.lastUpdatedAt = timestampIso;
+
+  if (conversation.confirmationState === 'CONFIRMED') {
+    TASK_ORDER.forEach((field) => {
+      conversation.tasks[field].status = 'CONFIRMED';
+      conversation.tasks[field].lastUpdatedAt = timestampIso;
+    });
   }
 
-  const dyspneaTerms = ['sesak', 'napas', 'nafas', 'shortness of breath', 'short of breath', 'difficulty breathing'];
-  if (dyspneaTerms.some((term) => normalized.includes(term))) {
-    fields.dyspnea = true;
-    confidences.dyspnea = 0.45;
-    rationales.dyspnea = 'Detected dyspnea indicator.';
-    heuristicsSignals.push('keyword:dyspnea');
+  const allCollected = TASK_ORDER.every((field) => {
+    const status = conversation.tasks[field].status;
+    return status === 'COLLECTED' || status === 'CONFIRMED';
+  });
+
+  const shouldEscalate =
+    allCollected && conversation.confirmationState === 'CONFIRMED' && !conversation.escalatedAt && !conversation.readyForDoctor;
+  if (shouldEscalate) {
+    conversation.readyForDoctor = true;
+  }
+  if (conversation.confirmationState === 'REVISE') {
+    conversation.readyForDoctor = false;
   }
 
-  const comorbidityKeywords = ['komorbid', 'diabetes', 'hipertensi', 'hypertension', 'asma', 'asthma', 'tb', 'tuberkulosis', 'tuberculosis', 'hiv'];
-  if (comorbidityKeywords.some((keyword) => normalized.includes(keyword))) {
-    fields.comorbidity = true;
-    confidences.comorbidity = 0.4;
-    rationales.comorbidity = 'Detected comorbidity keyword.';
-    heuristicsSignals.push('keyword:comorbidity');
-  }
+  base.conversation = conversation;
+  const conversationInfo = {
+    reply: analysis.replyMessage || null,
+    confirmationState: conversation.confirmationState,
+    shouldEscalate,
+    summary: conversation.summary || null,
+    taskStatus: serializeTaskState(conversation.tasks)
+  };
 
-  baseline.recommendImage = /foto|photo|gambar|image|sputum|dahak|tenggorokan/.test(normalized) || baseline.recommendImage;
-  return baseline;
+  return {
+    metadata: base,
+    conversationInfo
+  };
 };
 
 const parseJsonBlock = (content) => {
@@ -237,7 +490,7 @@ const ensureFieldDefaults = (fields) => {
 };
 
 const extractSymptoms = async (text, options = {}) => {
-  const { context } = options;
+  const { context, prisma, caseId, conversationState: existingConversationState } = options;
   if (!text || typeof text !== 'string') {
     return {
       fields: ensureFieldDefaults({}),
@@ -248,100 +501,162 @@ const extractSymptoms = async (text, options = {}) => {
       provider: 'NONE',
       model: null,
       heuristicsApplied: [],
-      fallbackUsed: true,
+      fallbackUsed: false,
       notes: [],
-      raw: {}
+      raw: {},
+      replyMessage: null,
+      conversation: {
+        taskStatus: serializeTaskState(buildInitialTaskState()),
+        confirmationState: 'NONE',
+        confirmationSummary: null,
+        allowSmallTalk: true,
+        planContext: null,
+        notes: []
+      }
     };
   }
 
-  const heuristics = heuristicsExtract(text);
+  if (!config.openAiKey || config.openAiKey.trim().length === 0) {
+    throw new Error('OpenAI key not configured');
+  }
+
+  const conversationState = ensureConversationState(existingConversationState);
   const contextSummary = summarizeContext(context);
-  let fields = { ...heuristics.fields };
-  let confidences = { ...heuristics.confidences };
-  let rationales = { ...heuristics.rationales };
-  let recommendImage = heuristics.recommendImage;
-  let provider = 'HEURISTIC';
-  let model = null;
-  let fallbackUsed = false;
-  let notes = [];
-  const raw = {
-    heuristics: {
-      signals: heuristics.heuristicsSignals || [],
-      recommendImage: heuristics.recommendImage
-    }
+  const taskSnapshot = serializeTaskState(conversationState.tasks);
+  let conversationExtras = {
+    replyMessage: null,
+    taskStatus: JSON.parse(JSON.stringify(taskSnapshot)),
+    confirmationState: 'NONE',
+    confirmationSummary: null,
+    allowSmallTalk: true,
+    planContext: null,
+    notes: [],
+    recommendImage: true
   };
+  let fields = {};
+  let confidences = {};
+  let rationales = {};
+  let recommendImage = true;
+  let provider = 'OPENAI_GPT4O';
+  let model = config.openAiModel || 'gpt-4o-mini';
+  let notes = [];
+  const raw = {};
   if (contextSummary) {
     raw.context = contextSummary;
   }
 
-  if (config.openAiKey) {
-    try {
-      const client = getClient();
-      const baseSystemPrompt =
-        'You are Breathy, a warm Indonesian virtual respiratory triage companion. Interpret patient stories (including slang or mixed languages) and extract structured respiratory triage data. Respond ONLY with JSON matching {"symptoms":{"feverStatus":{"value":boolean|null,"confidence":0-1,"rationale?":string},"onsetDays":{"value":number|null,"confidence":0-1,"rationale?":string},"dyspnea":{"value":boolean|null,"confidence":0-1,"rationale?":string},"comorbidity":{"value":boolean|null,"confidence":0-1,"rationale?":string}},"missingFields":string[],"recommendImage":boolean,"notes"?:string[]}. When unsure, set value null and include the field in missingFields. Use Bahasa Indonesia for notes and suggest gentle follow-up questions.';
-      const messages = [{ role: 'system', content: baseSystemPrompt }];
-      if (contextSummary) {
-        const contextLines = [];
-        if (contextSummary.knownStatements.length > 0) {
-          contextLines.push(`Informasi yang sudah tercatat: ${contextSummary.knownStatements.join('; ')}.`);
-        }
-        if (contextSummary.missingLabels.length > 0) {
-          contextLines.push(`Prioritaskan melengkapi: ${contextSummary.missingLabels.join(', ')}.`);
-        }
-        if (contextSummary.awaitingClarification) {
-          contextLines.push('Ringkasan sebelumnya sedang menunggu klarifikasi pasien.');
-        }
-        const contextInstruction = `Gunakan konteks percakapan sejauh ini. Jika cerita baru berbeda dengan catatan lama, utamakan pesan terbaru pasien.${
-          contextLines.length > 0 ? `\n${contextLines.join('\n')}` : ''
-        }`;
-        messages.push({
-          role: 'system',
-          content: contextInstruction
-        });
+  try {
+    const client = getClient();
+    const baseSystemPrompt =
+      'You are Breathy, a warm Indonesian virtual respiratory triage companion. Jaga percakapan alami namun tetap pastikan empat data wajib terkumpul: demam tinggi, durasi batuk, sesak napas, dan komorbiditas. Output harus berupa JSON valid tanpa penjelasan di luar JSON. Struktur wajib: {"reply":string,"symptoms":{...},"taskStatus":{field:{"status":string,"prompt?":string,"latestAnswer?":string,"value?":any}},"confirmation":{"state":"NONE|REQUEST|CONFIRMED|REVISE","summary?":string},"recommendImage":boolean,"notes"?:string[],"planContext"?:object}. Balas dalam Bahasa Indonesia yang empatik.';
+    const systemTaskPrompt = `Status pengumpulan data saat ini:\n${buildTaskContextLines(conversationState.tasks)}\nSelalu hormati preferensi pengguna. Jika pasien ingin bercerita lebih panjang, tanggapi dulu lalu arahkan pelan-pelan ke pertanyaan wajib.`;
+    const taskDefinitionPrompt = `Definisi tugas wajib:\n${JSON.stringify(TASK_DEFINITIONS)}`;
+    const metadataPrompt = `Snapshot tugas JSON:\n${JSON.stringify(taskSnapshot)}`;
+    const messages = [
+      { role: 'system', content: baseSystemPrompt },
+      { role: 'system', content: taskDefinitionPrompt },
+      { role: 'system', content: metadataPrompt },
+      { role: 'system', content: systemTaskPrompt }
+    ];
+    if (contextSummary) {
+      const contextLines = [];
+      if (contextSummary.knownStatements.length > 0) {
+        contextLines.push(`Informasi yang sudah tercatat: ${contextSummary.knownStatements.join('; ')}.`);
       }
-      messages.push({
-        role: 'user',
-        content: `Pesan pasien terbaru (gunakan bahasa aslinya):\n${text}`
-      });
-
-      const completion = await client.chat.completions.create({
-        model: config.openAiModel || 'gpt-4o-mini',
-        temperature: 0,
-        max_tokens: 600,
-        messages
-      });
-      const rawContent = completion?.choices?.[0]?.message?.content || '';
-      const parsed = parseJsonBlock(rawContent);
-      if (parsed) {
-        const ai = parseSymptomResponse(parsed);
-        fields = { ...fields, ...ai.fields };
-        confidences = { ...confidences, ...ai.confidences };
-        rationales = { ...rationales, ...ai.rationales };
-        if (ai.notes.length > 0) {
-          notes = ai.notes;
-        }
-        if (ai.recommendImage !== undefined) {
-          recommendImage = ai.recommendImage;
-        }
-        provider = 'OPENAI_GPT4O';
-        model = config.openAiModel || 'gpt-4o-mini';
-        raw.parsed = parsed;
-        raw.rawExcerpt = sanitizeText(rawContent, 1000);
-        if (Array.isArray(parsed.missingFields)) {
-          raw.missingFromModel = parsed.missingFields;
-        }
+      if (contextSummary.missingLabels.length > 0) {
+        contextLines.push(`Prioritaskan melengkapi: ${contextSummary.missingLabels.join(', ')}.`);
       }
-    } catch (error) {
-      if (Object.keys(fields).length === 0) {
-        const err = new Error('OpenAI NLU failed');
-        err.cause = error;
-        throw err;
+      if (contextSummary.awaitingClarification) {
+        contextLines.push('Ringkasan sebelumnya menunggu klarifikasi pasien.');
       }
-      fallbackUsed = true;
-      raw.error = sanitizeText(error.message, 160);
+      if (contextLines.length > 0) {
+        messages.push({ role: 'system', content: contextLines.join('\n') });
+      }
     }
-  } else {
-    fallbackUsed = true;
+
+    let historyRecords = [];
+    if (prisma && caseId) {
+      historyRecords = await fetchRecentTextMessages(prisma, caseId, 8);
+    }
+    const historyMessages = mapHistoryToMessages(historyRecords, text);
+    historyMessages.forEach((msg) => {
+      messages.push(msg);
+    });
+
+    const completion = await client.chat.completions.create({
+      model,
+      temperature: 0,
+      max_tokens: 600,
+      response_format: { type: 'json_object' },
+      messages
+    });
+
+    const messageContent = completion?.choices?.[0]?.message?.content;
+    let rawContent = '';
+    if (Array.isArray(messageContent)) {
+      rawContent = messageContent
+        .map((part) => {
+          if (typeof part === 'string') {
+            return part;
+          }
+          if (part && typeof part === 'object' && typeof part.text === 'string') {
+            return part.text;
+          }
+          return '';
+        })
+        .join('');
+    } else if (typeof messageContent === 'string') {
+      rawContent = messageContent;
+    }
+    rawContent = rawContent ? rawContent.trim() : '';
+
+    raw.rawExcerpt = sanitizeText(rawContent, 1000);
+    const parsed = parseJsonBlock(rawContent);
+    if (!parsed) {
+      const snippet = rawContent ? rawContent.slice(0, 160) : 'empty response';
+      throw new Error(`OpenAI response missing JSON payload: ${snippet}`);
+    }
+    raw.parsed = parsed;
+    if (Array.isArray(parsed.missingFields)) {
+      raw.missingFromModel = parsed.missingFields;
+    }
+
+    const ai = parseSymptomResponse(parsed);
+    fields = { ...fields, ...ai.fields };
+    confidences = { ...confidences, ...ai.confidences };
+    rationales = { ...rationales, ...ai.rationales };
+    if (ai.notes.length > 0) {
+      notes = ai.notes;
+    }
+    if (ai.recommendImage !== undefined) {
+      recommendImage = ai.recommendImage;
+    }
+
+    const extras = parseConversationExtras(parsed);
+    const mergedTaskStatus = { ...conversationExtras.taskStatus };
+    TASK_ORDER.forEach((field) => {
+      if (extras.taskStatus[field]) {
+        mergedTaskStatus[field] = {
+          ...mergedTaskStatus[field],
+          ...extras.taskStatus[field],
+          status: TASK_STATUSES.includes(extras.taskStatus[field].status)
+            ? extras.taskStatus[field].status
+            : mergedTaskStatus[field].status
+        };
+      }
+    });
+    conversationExtras = {
+      ...conversationExtras,
+      ...extras,
+      taskStatus: mergedTaskStatus,
+      recommendImage: extras.recommendImage !== undefined ? extras.recommendImage : conversationExtras.recommendImage,
+      notes: extras.notes && extras.notes.length > 0 ? extras.notes : conversationExtras.notes
+    };
+  } catch (error) {
+    console.error('[nlu] OpenAI request failed:', error.message);
+    const err = new Error(`OpenAI NLU failed: ${error.message}`);
+    err.cause = error;
+    throw err;
   }
 
   fields = ensureFieldDefaults(fields);
@@ -354,11 +669,21 @@ const extractSymptoms = async (text, options = {}) => {
     recommendImage: recommendImage ?? true,
     provider,
     model,
-    heuristicsApplied: heuristics.heuristicsSignals || [],
-    fallbackUsed,
-    notes,
+    heuristicsApplied: [],
+    fallbackUsed: false,
+    notes: notes.length > 0 ? notes : conversationExtras.notes || [],
     raw,
-    readyForPreprocessing: missingFields.length === 0
+    readyForPreprocessing: missingFields.length === 0,
+    replyMessage: conversationExtras.replyMessage,
+    conversation: {
+      taskStatus: conversationExtras.taskStatus,
+      confirmationState: conversationExtras.confirmationState,
+      confirmationSummary: conversationExtras.confirmationSummary,
+      allowSmallTalk: conversationExtras.allowSmallTalk,
+      planContext: conversationExtras.planContext,
+      recommendImage: conversationExtras.recommendImage,
+      notes: conversationExtras.notes
+    }
   };
   analysis.raw.notes = notes;
   return analysis;
@@ -423,7 +748,28 @@ const evaluateText = async ({ caseId, text, prisma, context }) => {
     throw new Error('Text is required');
   }
 
-  const analysis = await extractSymptoms(text, { context });
+  const existingCase = await client.cases.findUnique({
+    where: { id: caseId },
+    select: {
+      triage_metadata: true,
+      status: true
+    }
+  });
+  if (!existingCase) {
+    throw new Error('Case not found');
+  }
+
+  const baseMetadata =
+    existingCase.triage_metadata && typeof existingCase.triage_metadata === 'object'
+      ? existingCase.triage_metadata
+      : {};
+
+  const analysis = await extractSymptoms(text, {
+    context: context || baseMetadata,
+    prisma: client,
+    caseId,
+    conversationState: baseMetadata.conversation
+  });
   const payload = buildSymptomsPayload({ text, analysis });
   const severitySymptom = calculateSymptomScore(analysis.fields);
 
@@ -439,23 +785,17 @@ const evaluateText = async ({ caseId, text, prisma, context }) => {
     }
   });
 
-  const [symptomCount, caseRecord] = await Promise.all([
-    client.symptoms.count({ where: { case_id: caseId } }),
-    client.cases.findUnique({
-      where: { id: caseId },
-      select: { triage_metadata: true }
-    })
-  ]);
+  const symptomCount = await client.symptoms.count({ where: { case_id: caseId } });
 
-  const existingMetadata =
-    caseRecord && caseRecord.triage_metadata && typeof caseRecord.triage_metadata === 'object'
-      ? caseRecord.triage_metadata
-      : {};
   const now = new Date();
+  const timestampIso = now.toISOString();
+
+  const conversationMerged = mergeConversationSnapshot(baseMetadata, analysis, timestampIso);
+
   const mergedMetadata = mergeSymptomExtraction(
-    existingMetadata,
+    conversationMerged.metadata,
     {
-      at: now.toISOString(),
+      at: timestampIso,
       severitySymptom,
       fields: {
         feverStatus: payload.feverStatus,
@@ -472,7 +812,10 @@ const evaluateText = async ({ caseId, text, prisma, context }) => {
       heuristicsApplied: analysis.heuristicsApplied && analysis.heuristicsApplied.length > 0,
       heuristicsSignals: analysis.heuristicsApplied,
       fallbackUsed: analysis.fallbackUsed,
-      raw: analysis.raw
+      raw: {
+        ...analysis.raw,
+        conversation: conversationMerged.conversationInfo
+      }
     },
     { symptomEntries: symptomCount }
   );
@@ -494,12 +837,28 @@ const evaluateText = async ({ caseId, text, prisma, context }) => {
       readyForPreprocessing:
         mergedMetadata.dataCompleteness?.readyForPreprocessing ?? analysis.readyForPreprocessing
     },
-    triageMetadata: mergedMetadata
+    triageMetadata: mergedMetadata,
+    conversation: {
+      ...conversationMerged.conversationInfo,
+      readyForDoctor: Boolean(mergedMetadata?.conversation?.readyForDoctor)
+    }
   };
+};
+
+const setOpenAiClient = (client) => {
+  openAiClient = client;
+};
+
+const resetOpenAiClient = () => {
+  openAiClient = null;
 };
 
 module.exports = {
   evaluateText,
   calculateSymptomScore,
-  extractSymptoms
+  extractSymptoms,
+  __test__: {
+    setOpenAiClient,
+    resetOpenAiClient
+  }
 };

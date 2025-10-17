@@ -267,14 +267,12 @@ const claimCase = async (req, res, next) => {
   try {
     const { caseId } = req.params;
     const doctorContext = req.user || {};
+    const providedDoctorId = req.body && typeof req.body.doctorId === 'string' ? req.body.doctorId.trim() : null;
+    const providedUserId = req.body && typeof req.body.userId === 'string' ? req.body.userId.trim() : null;
+    const assigneeId = doctorContext.id || providedDoctorId || providedUserId || null;
     if (!caseId) {
       const error = new Error('caseId is required');
       error.status = 400;
-      throw error;
-    }
-    if (!doctorContext.id) {
-      const error = new Error('Authorization required');
-      error.status = 401;
       throw error;
     }
     const prisma = getPrisma();
@@ -304,7 +302,7 @@ const claimCase = async (req, res, next) => {
       error.status = 404;
       throw error;
     }
-    if (existing.doctor_id && existing.doctor_id !== doctorContext.id) {
+    if (existing.doctor_id && assigneeId && existing.doctor_id !== assigneeId) {
       const error = new Error('Case is already assigned to another doctor');
       error.status = 409;
       throw error;
@@ -320,16 +318,20 @@ const claimCase = async (req, res, next) => {
       existing.triage_metadata && typeof existing.triage_metadata === 'object' ? { ...existing.triage_metadata } : {};
     metadata.lastClaim = {
       at: now.toISOString(),
-      doctorId: doctorContext.id
+      doctorId: assigneeId || doctorContext.id || null
     };
+
+    const updateData = {
+      triage_metadata: metadata,
+      updated_at: now
+    };
+    if (assigneeId) {
+      updateData.doctor_id = assigneeId;
+    }
 
     const updated = await prisma.cases.update({
       where: { id: caseId },
-      data: {
-        doctor_id: doctorContext.id,
-        triage_metadata: metadata,
-        updated_at: now
-      }
+      data: updateData
     });
 
     res.status(200).json({
@@ -340,7 +342,7 @@ const claimCase = async (req, res, next) => {
         severityClass: updated.severity_class,
         severityScore: toNullableDecimal(updated.severity_score),
         sputumCategory: updated.sputum_category,
-        doctorId: updated.doctor_id,
+        doctorId: updateData.doctor_id || updated.doctor_id || null,
         claimedAt: now.toISOString()
       }
     });

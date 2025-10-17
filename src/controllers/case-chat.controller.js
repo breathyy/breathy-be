@@ -122,6 +122,34 @@ const listCaseChat = async (req, res, next) => {
   }
 };
 
+const resetPatientConversation = async (req, res, next) => {
+  try {
+    const { caseId } = req.params;
+    const context = req.user || {};
+    if (context.role !== 'PATIENT') {
+      const error = new Error('Forbidden');
+      error.status = 403;
+      throw error;
+    }
+
+    const prisma = getPrisma();
+    await assertCaseAccess({ prisma, caseId, userContext: context });
+
+    const result = await chatService.resetPatientConversation({
+      caseId,
+      actor: context,
+      prisma
+    });
+
+    res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 
 const createPatientMessage = async (req, res, next) => {
   try {
@@ -261,5 +289,6 @@ const requestPatientUploadUrl = async (req, res, next) => {
 module.exports = {
   listCaseChat,
   createPatientMessage,
-  requestPatientUploadUrl
+  requestPatientUploadUrl,
+  resetPatientConversation
 };

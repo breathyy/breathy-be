@@ -2,161 +2,93 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
-  __test__: { handleQuestionnaireProgress }
+  __test__: { applyConversationOutcome }
 } = require('../src/services/chat.service');
 
-const buildPrismaStub = (caseRecordRef) => {
-  return {
-    cases: {
-      update: async ({ data }) => {
-        Object.assign(caseRecordRef, data);
-        return { ...caseRecordRef };
-      }
-    }
-  };
-};
-
-test('handleQuestionnaireProgress asks missing mandatory field with persona tone', async () => {
+test('applyConversationOutcome sends assistant reply without escalating', async () => {
   const caseRecord = {
     id: 'case-1',
     status: 'IN_CHATBOT',
     triage_metadata: {}
   };
-  const prisma = buildPrismaStub(caseRecord);
+  const triageMetadata = {
+    conversation: {}
+  };
   const captured = [];
-  const analysis = {
-    fields: {},
-    missingFields: ['feverStatus', 'dyspnea']
-  };
-  const metadata = {};
-
-  const result = await handleQuestionnaireProgress({
-    prisma,
-    caseRecord,
-    metadata,
-    analysis,
-    latestText: null,
-    user: { phone_number: '+628111000001' },
-    sendMessage: async (payload) => {
-      captured.push(payload);
-      return 'submitted';
-    }
-  });
-
-  assert.equal(captured.length, 1);
-  assert.equal(captured[0].metadata.reason, 'ASK_MANDATORY');
-  assert.equal(captured[0].metadata.field, 'feverStatus');
-  assert.match(captured[0].message, /Hai, aku Breathy/i);
-  assert.equal(result.updatedCase.status, 'IN_CHATBOT');
-  assert.ok(result.triageMetadata.questionnaire.asked.feverStatus);
-});
-
-test('handleQuestionnaireProgress asks optional topic after mandatory completion', async () => {
-  const caseRecord = {
-    id: 'case-2',
-    status: 'IN_CHATBOT',
-    triage_metadata: {}
-  };
-  const prisma = buildPrismaStub(caseRecord);
-  const captured = [];
-  const analysis = {
-    fields: {
-      feverStatus: true,
-      onsetDays: 4,
-      dyspnea: false,
-      comorbidity: false
-    },
-    missingFields: []
-  };
-  const metadata = {
-    questionnaire: {
-      asked: {
-        feverStatus: '2025-10-16T00:00:00.000Z',
-        onsetDays: '2025-10-16T00:01:00.000Z',
-        dyspnea: '2025-10-16T00:02:00.000Z',
-        comorbidity: '2025-10-16T00:03:00.000Z'
-      },
-      optionalAsked: {}
-    }
-  };
-
-  const result = await handleQuestionnaireProgress({
-    prisma,
-    caseRecord,
-    metadata,
-    analysis,
-    latestText: null,
-    user: { phone_number: '+628111000002' },
-    sendMessage: async (payload) => {
-      captured.push(payload);
-      return 'submitted';
-    }
-  });
-
-  assert.equal(captured.length, 1);
-  assert.equal(captured[0].metadata.reason, 'ASK_OPTIONAL');
-  assert.equal(captured[0].metadata.topic, 'exposureHistory');
-  assert.match(captured[0].message, /kontak dekat/i);
-  assert.equal(result.updatedCase.status, 'IN_CHATBOT');
-  assert.ok(result.triageMetadata.questionnaire.optionalAsked.exposureHistory);
-});
-
-test('handleQuestionnaireProgress confirms summary and promotes case to WAITING_DOCTOR', async () => {
-  const caseRecord = {
-    id: 'case-3',
-    status: 'IN_CHATBOT',
-    triage_metadata: {}
-  };
-  const prisma = buildPrismaStub(caseRecord);
-  const captured = [];
-  const metadata = {
-    questionnaire: {
-      asked: {
-        feverStatus: '2025-10-16T00:00:00.000Z',
-        onsetDays: '2025-10-16T00:01:00.000Z',
-        dyspnea: '2025-10-16T00:02:00.000Z',
-        comorbidity: '2025-10-16T00:03:00.000Z'
-      },
-      optionalAsked: {
-        exposureHistory: '2025-10-16T00:05:00.000Z',
-        medicationUse: '2025-10-16T00:06:00.000Z'
-      },
-      awaitingConfirmation: true,
-      summarySnapshot: {
-        fields: {
-          feverStatus: true,
-          onsetDays: 4,
-          dyspnea: false,
-          comorbidity: false
-        }
+  const prisma = {
+    cases: {
+      update: async () => {
+        throw new Error('should not update when no escalation');
       }
     }
   };
-  const analysis = {
-    fields: {
-      feverStatus: true,
-      onsetDays: 4,
-      dyspnea: false,
-      comorbidity: false
-    },
-    missingFields: []
-  };
 
-  const result = await handleQuestionnaireProgress({
+  const result = await applyConversationOutcome({
     prisma,
     caseRecord,
-    metadata,
-    analysis,
-    latestText: 'YA',
-    user: { phone_number: '+628111000003' },
+    triageMetadata,
+    conversation: {
+      reply: 'Halo, terima kasih sudah berbagi ceritanya.',
+      shouldEscalate: false,
+      confirmationState: 'NONE'
+    },
+    user: { phone_number: '+628111000001' },
     sendMessage: async (payload) => {
       captured.push(payload);
-      return 'submitted';
+      return 'ok';
     }
   });
 
   assert.equal(captured.length, 1);
-  assert.equal(captured[0].metadata.reason, 'CONFIRMED_ESCALATION');
+  assert.equal(captured[0].metadata.reason, 'ASSISTANT_REPLY');
+  assert.equal(result.updatedCase, caseRecord);
+  assert.equal(result.triageMetadata, triageMetadata);
+});
+
+test('applyConversationOutcome escalates case and notifies patient', async () => {
+  const caseRecord = {
+    id: 'case-2',
+    status: 'IN_CHATBOT',
+    triage_metadata: {
+      conversation: {}
+    }
+  };
+  let updatePayload = null;
+  const prisma = {
+    cases: {
+      update: async ({ data }) => {
+        updatePayload = data;
+        return {
+          ...caseRecord,
+          status: data.status,
+          triage_metadata: data.triage_metadata
+        };
+      }
+    }
+  };
+  const captured = [];
+
+  const result = await applyConversationOutcome({
+    prisma,
+    caseRecord,
+    triageMetadata: caseRecord.triage_metadata,
+    conversation: {
+      reply: null,
+      shouldEscalate: true,
+      confirmationState: 'CONFIRMED'
+    },
+    user: { phone_number: '+628111000002' },
+    sendMessage: async (payload) => {
+      captured.push(payload);
+      return 'ok';
+    }
+  });
+
+  assert.equal(captured.length, 1);
+  assert.equal(captured[0].metadata.reason, 'ESCALATE_TO_DOCTOR');
+  assert.ok(updatePayload);
+  assert.equal(updatePayload.status, 'WAITING_DOCTOR');
+  assert.ok(updatePayload.triage_metadata.conversation.readyForDoctor);
+  assert.ok(updatePayload.triage_metadata.conversation.escalatedAt);
   assert.equal(result.updatedCase.status, 'WAITING_DOCTOR');
-  assert.ok(result.triageMetadata.questionnaire.patientConfirmation);
 });

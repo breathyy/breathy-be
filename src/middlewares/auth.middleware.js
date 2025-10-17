@@ -74,6 +74,9 @@ const optionalAuthenticate = (req, res, next) => {
     attachUserContext(req, payload);
     return next();
   } catch (error) {
+    if (error && error.status === 401) {
+      return next();
+    }
     return next(error);
   }
 };

@@ -3,16 +3,7 @@ const nluService = require('./nlu.service');
 const acsService = require('./acs.service');
 const blobService = require('./blob.service');
 const caseImageService = require('./case-image.service');
-const {
-  REQUIRED_FIELDS,
-  OPTIONAL_TOPICS,
-  buildSummaryMessage,
-  isAffirmative,
-  isNegative,
-  isNoChangeResponse,
-  normalizeReply
-} = require('../utils/questionnaire');
-const { appendStatusTransition } = require('../utils/triage-metadata');
+const { appendStatusTransition, applyDataCompleteness } = require('../utils/triage-metadata');
 
 const { normalizePhone } = acsService;
 
@@ -261,185 +252,89 @@ const sendPatientText = async ({ caseId, phoneNumber, message, metadata = {} }) 
   return status;
 };
 
-const handleQuestionnaireProgress = async ({
+const applyConversationOutcome = async ({
   prisma,
   caseRecord,
-  metadata,
-  analysis,
-  latestText,
+  triageMetadata,
+  conversation,
   user,
   sendMessage = sendPatientText
 }) => {
-  if (!caseRecord || !metadata || typeof metadata !== 'object') {
+  if (!caseRecord || !triageMetadata || typeof triageMetadata !== 'object' || !conversation) {
     return {
       updatedCase: caseRecord,
-      triageMetadata: metadata
+      triageMetadata
     };
   }
-
-  const metadataCopy = JSON.parse(JSON.stringify(metadata));
-  const questionnaire = {
-    asked: {},
-    optionalAsked: {},
-    ...((metadataCopy.questionnaire && typeof metadataCopy.questionnaire === 'object'
-      ? metadataCopy.questionnaire
-      : {}))
-  };
-  questionnaire.asked = questionnaire.asked || {};
-  questionnaire.optionalAsked = questionnaire.optionalAsked || {};
 
   const caseId = caseRecord.id;
   const phoneNumber = user ? user.phone_number : null;
-  const now = new Date();
-  const nowIso = now.toISOString();
-  const metadataMissing =
-    metadata?.dataCompleteness && Array.isArray(metadata.dataCompleteness.missingSymptoms)
-      ? metadata.dataCompleteness.missingSymptoms
-      : [];
-  const analysisMissing = Array.isArray(analysis?.missingFields) ? analysis.missingFields : [];
-  const missingFields = metadataMissing.length > 0 ? metadataMissing : analysisMissing;
-  const awaitingClarification = Boolean(questionnaire.awaitingClarification);
+  let updatedCase = caseRecord;
+  let updatedMetadata = triageMetadata;
 
-  let metadataChanged = false;
+  const sendIfPossible = async (message, metadata = {}) => {
+    if (!phoneNumber || !message) {
+      return null;
+    }
+    return sendMessage({
+      caseId,
+      phoneNumber,
+      message,
+      metadata
+    });
+  };
 
-  const finalizeCase = async (confirmationText) => {
-    questionnaire.awaitingConfirmation = false;
-    questionnaire.awaitingClarification = false;
-    questionnaire.patientConfirmation = {
-      at: nowIso,
-      text: confirmationText
+  if (conversation.reply) {
+    await sendIfPossible(conversation.reply, { reason: 'ASSISTANT_REPLY' });
+  }
+
+  const conversationMeta =
+    updatedMetadata && updatedMetadata.conversation && typeof updatedMetadata.conversation === 'object'
+      ? { ...updatedMetadata.conversation }
+      : {};
+
+  const alreadyEscalated = Boolean(conversationMeta.escalatedAt) || caseRecord.status === 'WAITING_DOCTOR';
+
+  if (conversation.shouldEscalate && !alreadyEscalated) {
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const metadataWithEscalation = {
+      ...updatedMetadata,
+      conversation: {
+        ...conversationMeta,
+        escalatedAt: nowIso,
+        status: 'WAITING_DOCTOR',
+        readyForDoctor: true,
+        lastEscalationReason: 'CONVERSATION_COMPLETE'
+      }
     };
-    metadataChanged = true;
-    metadataCopy.questionnaire = questionnaire;
-    const updatedCase = await prisma.cases.update({
+    const metadataWithAudit = appendStatusTransition(metadataWithEscalation, {
+      from: caseRecord.status,
+      to: 'WAITING_DOCTOR',
+      actorType: 'SYSTEM',
+      actorId: null,
+      reason: 'CONVERSATION_READY'
+    });
+
+    updatedCase = await prisma.cases.update({
       where: { id: caseId },
       data: {
         status: 'WAITING_DOCTOR',
-        triage_metadata: metadataCopy,
+        triage_metadata: metadataWithAudit,
         updated_at: now
       }
     });
-    await sendMessage({
-      caseId,
-      phoneNumber,
-      message:
-        'Terima kasih, data kamu sudah lengkap. Dokter akan meninjau kasusmu dan kami kabari lagi untuk langkah selanjutnya ya.',
-      metadata: { reason: 'CONFIRMED_ESCALATION' }
-    });
-    return {
-      updatedCase,
-      triageMetadata: updatedCase.triage_metadata
-    };
-  };
+    updatedMetadata = metadataWithAudit;
 
-  if (awaitingClarification && typeof latestText === 'string') {
-    if (isNoChangeResponse(latestText) && missingFields.length === 0) {
-      return finalizeCase(latestText);
-    }
+    await sendIfPossible(
+      'Terima kasih, data kamu sudah lengkap. Dokter Breathy sedang meninjau kasusmu sekarang. Estimasi: 30 menit.',
+      { reason: 'ESCALATE_TO_DOCTOR' }
+    );
   }
-
-  if (caseRecord.status !== 'WAITING_DOCTOR') {
-    if (missingFields.length > 0) {
-      const pendingField = missingFields.find((field) => !questionnaire.asked[field] && REQUIRED_FIELDS[field]);
-      if (pendingField && REQUIRED_FIELDS[pendingField]) {
-        await sendMessage({
-          caseId,
-          phoneNumber,
-          message: REQUIRED_FIELDS[pendingField].prompt,
-          metadata: { reason: 'ASK_MANDATORY', field: pendingField }
-        });
-        questionnaire.asked[pendingField] = nowIso;
-        questionnaire.awaitingClarification = false;
-        metadataChanged = true;
-      }
-      if (questionnaire.awaitingConfirmation) {
-        questionnaire.awaitingConfirmation = false;
-        questionnaire.awaitingClarification = false;
-        metadataChanged = true;
-      }
-    } else {
-      const pendingOptional = OPTIONAL_TOPICS.find((topic) => !questionnaire.optionalAsked[topic.key]);
-      if (pendingOptional) {
-        await sendMessage({
-          caseId,
-          phoneNumber,
-          message: pendingOptional.prompt,
-          metadata: { reason: 'ASK_OPTIONAL', topic: pendingOptional.key }
-        });
-        questionnaire.optionalAsked[pendingOptional.key] = nowIso;
-        questionnaire.awaitingClarification = false;
-        metadataCopy.questionnaire = questionnaire;
-        const updatedCase = await prisma.cases.update({
-          where: { id: caseId },
-          data: {
-            triage_metadata: metadataCopy,
-            updated_at: now
-          }
-        });
-        return {
-          updatedCase,
-          triageMetadata: updatedCase.triage_metadata
-        };
-      }
-      if (!questionnaire.awaitingConfirmation) {
-        const summaryMessage = buildSummaryMessage(analysis?.fields || {});
-        await sendMessage({
-          caseId,
-          phoneNumber,
-          message: summaryMessage,
-          metadata: { reason: 'SUMMARY_CONFIRMATION' }
-        });
-        questionnaire.awaitingConfirmation = true;
-        questionnaire.awaitingClarification = false;
-        questionnaire.summarySentAt = nowIso;
-        questionnaire.summarySnapshot = {
-          fields: analysis?.fields || {},
-          generatedAt: nowIso
-        };
-        metadataChanged = true;
-      }
-    }
-
-    if (questionnaire.awaitingConfirmation && typeof latestText === 'string') {
-      const normalized = normalizeReply(latestText);
-      if (isAffirmative(normalized)) {
-        return finalizeCase(latestText);
-      }
-      if (isNegative(normalized)) {
-        questionnaire.awaitingConfirmation = false;
-        questionnaire.awaitingClarification = true;
-        questionnaire.confirmationDeclinedAt = nowIso;
-        metadataChanged = true;
-        await sendMessage({
-          caseId,
-          phoneNumber,
-          message: 'Baik, sebutkan bagian yang perlu diperbaiki agar kami dapat memperbarui catatan Anda.',
-          metadata: { reason: 'CONFIRMATION_CLARIFY' }
-        });
-      }
-    }
-  }
-
-  if (!metadataChanged) {
-    metadataCopy.questionnaire = questionnaire;
-    return {
-      updatedCase: caseRecord,
-      triageMetadata: metadataCopy
-    };
-  }
-
-  metadataCopy.questionnaire = questionnaire;
-  const updatedCase = await prisma.cases.update({
-    where: { id: caseId },
-    data: {
-      triage_metadata: metadataCopy,
-      updated_at: now
-    }
-  });
 
   return {
     updatedCase,
-    triageMetadata: updatedCase.triage_metadata
+    triageMetadata: updatedMetadata
   };
 };
 
@@ -455,7 +350,8 @@ const processIncomingMessage = async (payload) => {
   const meta = {
     messageId: messageId || null,
     timestamp: timestamp || new Date().toISOString(),
-    raw: {}
+    raw: {},
+    direction: 'INBOUND'
   };
   if (messageType === 'text') {
     content = text && typeof text.body === 'string' ? text.body : null;
@@ -489,22 +385,24 @@ const processIncomingMessage = async (payload) => {
         readyForPreprocessing: nluResult.analysis ? nluResult.analysis.readyForPreprocessing : undefined,
         notes: nluResult.analysis ? nluResult.analysis.notes : undefined
       };
+      if (nluResult.conversation) {
+        meta.conversation = nluResult.conversation;
+      }
       triageMetadataSnapshot = nluResult.triageMetadata || triageMetadataSnapshot;
       if (triageMetadataSnapshot && triageMetadataSnapshot.dataCompleteness) {
         meta.dataCompleteness = triageMetadataSnapshot.dataCompleteness;
       }
-      const questionnaireResult = await handleQuestionnaireProgress({
+      const conversationResult = await applyConversationOutcome({
         prisma,
         caseRecord: activeCase,
-        metadata: triageMetadataSnapshot,
-        analysis: nluResult.analysis,
-        latestText: content,
+        triageMetadata: triageMetadataSnapshot,
+        conversation: nluResult.conversation,
         user,
         sendMessage: sendPatientText
       });
-      if (questionnaireResult) {
-        activeCase = questionnaireResult.updatedCase || activeCase;
-        triageMetadataSnapshot = questionnaireResult.triageMetadata || triageMetadataSnapshot;
+      if (conversationResult) {
+        activeCase = conversationResult.updatedCase || activeCase;
+        triageMetadataSnapshot = conversationResult.triageMetadata || triageMetadataSnapshot;
         if (triageMetadataSnapshot && triageMetadataSnapshot.dataCompleteness) {
           meta.dataCompleteness = triageMetadataSnapshot.dataCompleteness;
         }
@@ -513,6 +411,7 @@ const processIncomingMessage = async (payload) => {
       meta.nlu = {
         error: error.message
       };
+      throw error;
     }
   }
   const chatMessage = await createChatMessage(prisma, activeCase.id, messageType, content, blobRef, meta);
@@ -527,12 +426,186 @@ const processIncomingMessage = async (payload) => {
   };
 };
 
+const resetPatientConversation = async ({ caseId, actor, prisma }) => {
+  const client = prisma || getPrisma();
+  if (!caseId) {
+    const error = new Error('caseId is required');
+    error.status = 400;
+    throw error;
+  }
+
+  return client.$transaction(async (tx) => {
+    const existing = await tx.cases.findUnique({
+      where: { id: caseId },
+      select: {
+        id: true,
+        status: true,
+        triage_metadata: true,
+        user_id: true
+      }
+    });
+    if (!existing) {
+      const error = new Error('Case not found');
+      error.status = 404;
+      throw error;
+    }
+
+    const now = new Date();
+    const nowIso = now.toISOString();
+
+    const [messagesDeleted, symptomsDeleted, tasksDeleted] = await Promise.all([
+      tx.chat_messages.deleteMany({ where: { case_id: caseId } }),
+      tx.symptoms.deleteMany({ where: { case_id: caseId } }),
+      tx.daily_tasks.deleteMany({ where: { case_id: caseId } })
+    ]);
+
+    const baseMetadata = existing.triage_metadata && typeof existing.triage_metadata === 'object'
+      ? { ...existing.triage_metadata }
+      : {};
+
+    const conversationReset = {
+      tasks: {},
+      confirmationState: 'NONE',
+      readyForDoctor: false,
+      allowSmallTalk: true,
+      lastReply: null,
+      lastUpdatedAt: nowIso,
+      summary: null,
+      planContext: null,
+      status: 'IN_CHATBOT'
+    };
+
+    const metadataWithConversation = {
+      ...baseMetadata,
+      conversation: conversationReset,
+      lastApproval: null,
+      lastReset: {
+        at: nowIso,
+        actorType: actor && actor.role ? actor.role : 'PATIENT',
+        actorId: actor && actor.id ? actor.id : null,
+        reason: 'PATIENT_REQUEST'
+      }
+    };
+
+    const metadataWithAudit = appendStatusTransition(metadataWithConversation, {
+      from: existing.status,
+      to: 'IN_CHATBOT',
+      actorType: actor && actor.role ? actor.role.toUpperCase() : 'PATIENT',
+      actorId: actor && actor.id ? actor.id : null,
+      reason: 'PATIENT_RESET'
+    });
+
+    const metadataFinal = applyDataCompleteness(metadataWithAudit, nowIso);
+
+    const updated = await tx.cases.update({
+      where: { id: caseId },
+      data: {
+        status: 'IN_CHATBOT',
+        doctor_id: null,
+        severity_score: null,
+        severity_class: null,
+        triage_metadata: metadataFinal,
+        updated_at: now
+      },
+      select: {
+        id: true,
+        status: true
+      }
+    });
+
+    return {
+      caseId: updated.id,
+      caseStatus: updated.status,
+      clearedMessages: messagesDeleted.count,
+      clearedSymptoms: symptomsDeleted.count,
+      clearedTasks: tasksDeleted.count
+    };
+  });
+};
+
+const notifyDoctorReview = async ({ caseRecord, evaluation, prisma }) => {
+  const client = prisma || getPrisma();
+  let record = caseRecord;
+  if (!record || !record.id) {
+    return null;
+  }
+  if (!record.users || !record.users.phone_number) {
+    record = await client.cases.findUnique({
+      where: { id: record.id },
+      include: {
+        users: {
+          select: {
+            phone_number: true,
+            display_name: true
+          }
+        }
+      }
+    });
+  }
+  if (!record || !record.users || !record.users.phone_number) {
+    return null;
+  }
+
+  const phoneNumber = record.users.phone_number;
+  const caseId = record.id;
+  const severityClass = evaluation?.severityClass || record.severity_class || null;
+  const severityTextMap = {
+    MILD: 'ringan',
+    MODERATE: 'sedang',
+    SEVERE: 'berat'
+  };
+  const severityLabel = severityTextMap[severityClass] || 'sesuai kondisi terakhir';
+  const doctorNotes = evaluation?.notes || record?.triage_metadata?.lastApproval?.notes || 'Ikuti panduan yang sudah diberikan sebelumnya ya.';
+
+  const message = `Kamu sudah mendapatkan review dokter. Hasil klasifikasi dokter: ${severityLabel}. Catatan dokter: ${doctorNotes}
+
+Kalau masih ada pertanyaan tentang obat atau perawatan, tinggal tanya aja lewat companion Breathy ya.`;
+
+  await sendPatientText({
+    caseId,
+    phoneNumber,
+    message,
+    metadata: { reason: 'DOCTOR_REVIEW' }
+  });
+
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const metadataBase =
+    record.triage_metadata && typeof record.triage_metadata === 'object' ? { ...record.triage_metadata } : {};
+  const conversationMeta = metadataBase.conversation && typeof metadataBase.conversation === 'object'
+    ? { ...metadataBase.conversation }
+    : {};
+  conversationMeta.doctorReview = {
+    at: nowIso,
+    severityClass,
+    notes: doctorNotes
+  };
+  conversationMeta.status = 'DOCTOR_REVIEWED';
+  conversationMeta.lastUpdatedAt = nowIso;
+  conversationMeta.allowSmallTalk = true;
+  metadataBase.conversation = conversationMeta;
+
+  await client.cases.update({
+    where: { id: caseId },
+    data: {
+      triage_metadata: metadataBase,
+      updated_at: now
+    }
+  });
+
+  return {
+    message
+  };
+};
+
 module.exports = {
   processIncomingMessage,
   normalizePhone,
   recordOutboundText,
   ensureActiveCase,
+  resetPatientConversation,
+  notifyDoctorReview,
   __test__: {
-    handleQuestionnaireProgress
+    applyConversationOutcome
   }
 };

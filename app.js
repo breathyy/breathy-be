@@ -1,6 +1,7 @@
 const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
+
 const config = require('./src/config/env.config');
 const appInsightsService = require('./src/services/appInsightsService');
 const logger = require('./src/middlewares/logger.middleware');
@@ -16,7 +17,6 @@ const doctorRoutes = require('./src/routes/doctor.route');
 appInsightsService.setup();
 
 const app = express();
-
 app.disable('x-powered-by');
 app.use(helmet());
 app.use(cors({ origin: true, credentials: true }));
@@ -40,24 +40,16 @@ app.use('/cases', caseRoutes);
 app.use('/referrals', referralRoutes);
 app.use('/doctor', doctorRoutes);
 
-app.use((req, res) => {
-  res.status(404).json({ error: 'Not found' });
-});
-
+app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 app.use(errorHandler);
 
 const start = () => {
-  const port = config.port;
-  app.listen(port, () => {
-    console.log(`Breathy API listening on port ${port}`);
-  });
+  const port = config.port || 3000;
+  app.listen(port, () => console.log(`Breathy API listening on port ${port}`));
 };
 
 if (require.main === module) {
-  start();
+  start(); 
 }
 
-module.exports = {
-  app,
-  start
-};
+module.exports = app;
