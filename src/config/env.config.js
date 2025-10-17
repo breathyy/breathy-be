@@ -35,7 +35,9 @@ const config = {
   appInsightsConnectionString: process.env.APPINSIGHTS_CONNECTION_STRING || '',
   triageAlpha: Number(process.env.TRIAGE_ALPHA) || 0.6,
   triageThresholds: parseThresholds(process.env.TRIAGE_THRESHOLDS || '0.4|0.7'),
-  storageCorsAllowedOrigins: parseCsvList(process.env.STORAGE_CORS_ALLOWED_ORIGINS || 'http://localhost:3000')
+  storageCorsAllowedOrigins: parseCsvList(
+    process.env.STORAGE_CORS_ALLOWED_ORIGINS || 'http://localhost:3000,https://breathy-fe.vercel.app,https://breathyy.vercel.app'
+  )
 };
 
 module.exports = config;
