@@ -95,9 +95,12 @@ const ensureCorsRules = async () => {
 
   const existingRule = corsRules.find((rule) => {
     const ruleOrigins = parseCsv(rule.allowedOrigins || '*');
+    const normalizedRuleOrigins = ruleOrigins.map((origin) => origin.toLowerCase());
+    const normalizedOrigins = origins.map((origin) => origin.toLowerCase());
     const ruleMethods = parseCsv(rule.allowedMethods || '');
     const ruleMethodsSet = new Set(ruleMethods.map((method) => method.toUpperCase()));
-    const hasOrigins = ruleOrigins.includes('*') || origins.every((origin) => ruleOrigins.includes(origin));
+    const hasOrigins =
+      normalizedRuleOrigins.includes('*') || normalizedOrigins.every((origin) => normalizedRuleOrigins.includes(origin));
     const hasMethods = corsRequiredMethods.every((method) => ruleMethodsSet.has(method));
     return hasOrigins && hasMethods;
   });
@@ -129,7 +132,7 @@ const ensureCorsRules = async () => {
       return rule;
     }
     return {
-      allowedOrigins: rule.allowedOrigins || targetOrigins,
+  allowedOrigins: rule.allowedOrigins || targetOrigins,
       allowedMethods: rule.allowedMethods || corsRequiredMethods.join(','),
       allowedHeaders: '*',
       exposedHeaders: '*',
