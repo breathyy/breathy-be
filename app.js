@@ -1,5 +1,6 @@
 const express = require('express');
 const helmet = require('helmet');
+const cors = require('cors');
 
 const config = require('./src/config/env.config');
 const appInsightsService = require('./src/services/appInsightsService');
@@ -18,6 +19,7 @@ appInsightsService.setup();
 const app = express();
 app.disable('x-powered-by');
 app.use(helmet());
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '1mb' }));
 app.use(logger);
 app.use(require('./src/middlewares/sanitize.middleware'));
