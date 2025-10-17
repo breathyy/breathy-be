@@ -14,6 +14,10 @@ const IMAGE_REQUEST_MESSAGE =
 const IMAGE_REQUEST_COOLDOWN_MS = 4 * 60 * 60 * 1000; // 4 jam penundaan sebelum minta ulang
 const IMAGE_REMINDER_MESSAGE =
   'Terima kasih ya, aku masih butuh foto dahak atau tenggorokan kamu supaya dokter bisa menilai lebih akurat. Kalau belum bisa kirim, tinggal bilang juga gapapa.';
+const IMAGE_ACK_MESSAGE =
+  'Terima kasih untuk fotonya! Aku teruskan ke dokter Breathy supaya analisanya makin akurat, tunggu kabar dariku ya.';
+const IMAGE_FAILURE_MESSAGE =
+  'Hmm, fotonya belum berhasil kami terima. Boleh coba kirim ulang atau kirim gambar lain ya?';
 
 const ensureUser = async (prisma, phoneNumber, displayName) => {
   const normalizedPhone = normalizePhone(phoneNumber);
@@ -490,6 +494,8 @@ const processIncomingMessage = async (payload) => {
   let triageMetadataSnapshot = activeCase.triage_metadata || {};
   let content = null;
   let blobRef = null;
+  let shouldReloadCaseAfterImage = false;
+  let pendingImageResponse = null;
   const meta = {
     messageId: messageId || null,
     timestamp: timestamp || new Date().toISOString(),
@@ -509,6 +515,35 @@ const processIncomingMessage = async (payload) => {
     });
     blobRef = ingestion.blobName;
     meta.media = ingestion.details;
+    const ingestionStatus = ingestion && ingestion.details ? ingestion.details.status : null;
+    if (blobRef) {
+      shouldReloadCaseAfterImage = true;
+      pendingImageResponse = {
+        type: 'success',
+        message: IMAGE_ACK_MESSAGE,
+        metadata: {
+          reason: 'IMAGE_RECEIVED_ACK',
+          uiVariant: 'IMAGE_ACK',
+          brand: 'breathy',
+          blobName: blobRef,
+          mediaStatus: ingestionStatus || 'REGISTERED'
+        }
+      };
+    } else if (
+      ingestionStatus &&
+      ['FAILED_DOWNLOAD', 'FAILED_REGISTER', 'SKIPPED_NO_STORAGE', 'SKIPPED_NO_URL', 'SKIPPED_NO_BLOB'].includes(ingestionStatus)
+    ) {
+      pendingImageResponse = {
+        type: 'error',
+        message: IMAGE_FAILURE_MESSAGE,
+        metadata: {
+          reason: 'IMAGE_RECEIVED_ERROR',
+          uiVariant: 'IMAGE_RETRY',
+          brand: 'breathy',
+          mediaStatus: ingestionStatus
+        }
+      };
+    }
   }
   if (messageType === 'text' && content) {
     try {
@@ -562,6 +597,60 @@ const processIncomingMessage = async (payload) => {
     where: { id: activeCase.id },
     data: { updated_at: new Date() }
   });
+
+  if (shouldReloadCaseAfterImage) {
+    const refreshedCase = await prisma.cases.findUnique({
+      where: { id: activeCase.id },
+      select: {
+        id: true,
+        status: true,
+        triage_metadata: true
+      }
+    });
+    if (refreshedCase) {
+      activeCase = {
+        ...activeCase,
+        status: refreshedCase.status,
+        triage_metadata: refreshedCase.triage_metadata
+      };
+      if (refreshedCase.triage_metadata && typeof refreshedCase.triage_metadata === 'object') {
+        triageMetadataSnapshot = refreshedCase.triage_metadata;
+      }
+    }
+  }
+
+  if (pendingImageResponse && pendingImageResponse.message) {
+    const conversationMeta =
+      triageMetadataSnapshot && typeof triageMetadataSnapshot.conversation === 'object'
+        ? triageMetadataSnapshot.conversation
+        : null;
+    let responseMessage = pendingImageResponse.message;
+    const responseMeta = {
+      ...pendingImageResponse.metadata,
+      conversationStatus: conversationMeta ? { ...conversationMeta } : undefined
+    };
+
+    if (pendingImageResponse.type === 'success') {
+      const doctorReviewInProgress =
+        activeCase.status === 'WAITING_DOCTOR' || (conversationMeta && conversationMeta.readyForDoctor === true);
+      if (doctorReviewInProgress) {
+        responseMessage =
+          'Terima kasih untuk fotonya! Datanya sudah lengkap dan lagi ditinjau dokter Breathy ya. Aku kabari begitu ada update.';
+        responseMeta.reason = 'IMAGE_READY_FOR_DOCTOR';
+        responseMeta.uiVariant = 'WAITING_DOCTOR_ALERT';
+      } else if (conversationMeta && conversationMeta.waitingForImage === false) {
+        responseMeta.reason = responseMeta.reason || 'IMAGE_RECEIVED_ACK';
+      }
+    }
+
+    await sendPatientText({
+      caseId: activeCase.id,
+      phoneNumber: user.phone_number,
+      message: responseMessage,
+      metadata: responseMeta
+    });
+  }
+
   return {
     user,
     case: activeCase,
