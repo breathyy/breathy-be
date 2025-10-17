@@ -6,6 +6,13 @@ const { mergeSymptomExtraction, REQUIRED_SYMPTOM_FIELDS, clampConfidence } = req
 
 let openAiClient;
 
+const SYMPTOM_LABELS = {
+  feverStatus: 'demam tinggi',
+  onsetDays: 'durasi batuk',
+  dyspnea: 'keluhan sesak napas',
+  comorbidity: 'riwayat komorbiditas'
+};
+
 const getClient = () => {
   if (!config.openAiKey) {
     throw new Error('OpenAI not configured');
@@ -21,6 +28,65 @@ const sanitizeText = (value, max = 400) => {
     return null;
   }
   return String(value).replace(/\s+/g, ' ').trim().slice(0, max);
+};
+
+const describeSymptomField = (field, value) => {
+  const label = SYMPTOM_LABELS[field] || field;
+  if (field === 'onsetDays') {
+    const numeric = toNumberOrNull(value);
+    if (numeric !== null && !Number.isNaN(numeric)) {
+      return `Durasi batuk tercatat ${numeric} hari`;
+    }
+    return null;
+  }
+  if (value === true) {
+    return `${label} sudah dilaporkan ada`;
+  }
+  if (value === false) {
+    return `${label} dilaporkan tidak ada`;
+  }
+  return null;
+};
+
+const summarizeContext = (metadata) => {
+  if (!metadata || typeof metadata !== 'object') {
+    return null;
+  }
+
+  const summary = {
+    knownStatements: [],
+    missingLabels: [],
+    awaitingClarification: Boolean(metadata?.questionnaire?.awaitingClarification)
+  };
+
+  const lastExtraction = metadata.lastSymptomExtraction;
+  if (lastExtraction && typeof lastExtraction === 'object' && lastExtraction.fields) {
+    REQUIRED_SYMPTOM_FIELDS.forEach((field) => {
+      const narrative = describeSymptomField(field, lastExtraction.fields[field]);
+      if (narrative) {
+        summary.knownStatements.push(narrative);
+      }
+    });
+  }
+
+  const missing = Array.isArray(metadata?.dataCompleteness?.missingSymptoms)
+    ? metadata.dataCompleteness.missingSymptoms
+    : [];
+  if (missing.length > 0) {
+    summary.missingLabels = missing.map((field) => SYMPTOM_LABELS[field] || field);
+  }
+
+  const summarySnapshot = metadata?.questionnaire?.summarySnapshot;
+  if (summarySnapshot && summarySnapshot.fields) {
+    const generatedAt = summarySnapshot.generatedAt ? ` (dibuat ${summarySnapshot.generatedAt})` : '';
+    summary.knownStatements.push(`Ringkasan gejala terakhir sudah dibagikan${generatedAt}.`);
+  }
+
+  if (summary.knownStatements.length === 0 && summary.missingLabels.length === 0 && !summary.awaitingClarification) {
+    return null;
+  }
+
+  return summary;
 };
 
 const heuristicsExtract = (text) => {
@@ -43,14 +109,6 @@ const heuristicsExtract = (text) => {
     rationales.feverStatus = 'Keyword indicates fever >=38°C.';
     heuristicsSignals.push('keyword:fever');
   }
-  const SYMPTOM_LABELS = {
-    feverStatus: 'demam tinggi',
-    onsetDays: 'durasi batuk',
-    dyspnea: 'keluhan sesak napas',
-    comorbidity: 'riwayat komorbiditas'
-  };
-
-
   const coughPattern =
     normalized.match(/batuk(?:\s+selama)?\s+(\d{1,2})\s*(hari|day|days)/) ||
     normalized.match(/cough(?:ing)?\s+(for\s+)?(\d{1,2})\s*(day|days)/);
@@ -334,7 +392,8 @@ const buildSymptomsPayload = ({ text, analysis }) => {
     rawExcerpt: analysis.raw && analysis.raw.rawExcerpt,
     parsed: analysis.raw && analysis.raw.parsed,
     heuristics: analysis.raw && analysis.raw.heuristics,
-    missingFromModel: analysis.raw && analysis.raw.missingFromModel
+    missingFromModel: analysis.raw && analysis.raw.missingFromModel,
+    context: analysis.raw && analysis.raw.context
   };
 
   Object.keys(analysisSnapshot).forEach((key) => {

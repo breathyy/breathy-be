@@ -53,7 +53,7 @@ const OPTIONAL_TOPICS = [
   {
     key: 'exposureHistory',
     prompt:
-      'Terima kasih ya! Ada info tambahan nggak, misal sempat kontak dekat dengan orang yang batuk/ISPA dalam 2 minggu terakhir?' 
+      'Terima kasih ya! Ada info tambahan nggak, misal sempat kontak dekat dengan orang yang batuk/ISPA dalam 2 minggu terakhir?'
   },
   {
     key: 'medicationUse',
