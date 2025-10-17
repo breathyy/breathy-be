@@ -223,9 +223,6 @@ const extractSymptoms = async (text, options = {}) => {
         'You are Breathy, a warm Indonesian virtual respiratory triage companion. Interpret patient stories (including slang or mixed languages) and extract structured respiratory triage data. Respond ONLY with JSON matching {"symptoms":{"feverStatus":{"value":boolean|null,"confidence":0-1,"rationale?":string},"onsetDays":{"value":number|null,"confidence":0-1,"rationale?":string},"dyspnea":{"value":boolean|null,"confidence":0-1,"rationale?":string},"comorbidity":{"value":boolean|null,"confidence":0-1,"rationale?":string}},"missingFields":string[],"recommendImage":boolean,"notes"?:string[]}. When unsure, set value null and include the field in missingFields. Use Bahasa Indonesia for notes and suggest gentle follow-up questions.';
       const messages = [{ role: 'system', content: baseSystemPrompt }];
       if (contextSummary) {
-' +
-
-        });
         const contextLines = [];
         if (contextSummary.knownStatements.length > 0) {
           contextLines.push(`Informasi yang sudah tercatat: ${contextSummary.knownStatements.join('; ')}.`);
@@ -358,7 +355,7 @@ const buildSymptomsPayload = ({ text, analysis }) => {
   };
 };
 
-const evaluateText = async ({ caseId, text, prisma }) => {
+const evaluateText = async ({ caseId, text, prisma, context }) => {
   const client = prisma || getPrisma();
   if (!caseId) {
     throw new Error('caseId is required');
@@ -367,7 +364,7 @@ const evaluateText = async ({ caseId, text, prisma }) => {
     throw new Error('Text is required');
   }
 
-  const analysis = await extractSymptoms(text);
+  const analysis = await extractSymptoms(text, { context });
   const payload = buildSymptomsPayload({ text, analysis });
   const severitySymptom = calculateSymptomScore(analysis.fields);
 
