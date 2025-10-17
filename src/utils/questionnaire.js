@@ -2,7 +2,7 @@ const REQUIRED_FIELDS = {
   feverStatus: {
     label: 'demam tinggi',
     prompt:
-      'Hai, aku Breathy — asisten perawatan ISPA kamu. 😄 Apa belakangan ini kamu merasakan demam tinggi (≥38°C)? Balas YA atau TIDAK ya!',
+      'Hai, aku Breathy — teman ngobrol kamu soal pernapasan. Ceritain ya, belakangan ini ada demam tinggi (sekitar ≥38°C) atau badan berasa panas berulang?',
     summary: (value) => {
       if (value === true) {
         return 'Demam tinggi terkonfirmasi';
@@ -16,13 +16,13 @@ const REQUIRED_FIELDS = {
   onsetDays: {
     label: 'durasi batuk',
     prompt:
-      'Noted, sekarang aku ingin tahu ya — sudah berapa hari batuknya dirasakan? Tulis angkanya saja ya (contoh: 3).',
+      'Boleh cerita sudah berapa lama batuknya dirasakan? Bisa sebut kira-kira berapa hari atau sejak kapan mulai terasa.',
     summary: (value) => (typeof value === 'number' ? `Batuk ${value} hari` : 'Durasi batuk belum pasti')
   },
   dyspnea: {
     label: 'sesak napas',
     prompt:
-      'Apakah kamu merasa sesak atau berat saat bernapas akhir-akhir ini? Balas YA jika ada, atau TIDAK bila tidak merasakan.',
+      'Untuk napasnya gimana? Ada rasa berat, sesak, atau cepat cape kalau bernapas? Ceritain kondisinya ya.',
     summary: (value) => {
       if (value === true) {
         return 'Sesak napas dirasakan';
@@ -36,7 +36,7 @@ const REQUIRED_FIELDS = {
   comorbidity: {
     label: 'komorbid',
     prompt:
-      'Adakah penyakit penyerta yang kamu miliki? Misalnya asma, diabetes, hipertensi, atau kondisi lain. Balas YA kalau ada ya.',
+      'Kalau soal riwayat kesehatan lain, ada kondisi seperti asma, diabetes, hipertensi, atau yang lain yang biasanya kamu alami?',
     summary: (value) => {
       if (value === true) {
         return 'Memiliki komorbiditas';
@@ -53,16 +53,72 @@ const OPTIONAL_TOPICS = [
   {
     key: 'exposureHistory',
     prompt:
-      'Terima kasih ya! Satu hal lagi, apakah kamu sempat kontak dekat dengan seseorang yang sakit ISPA dalam 14 hari terakhir?'
+      'Terima kasih ya! Ada info tambahan nggak, misal sempat kontak dekat dengan orang yang batuk/ISPA dalam 2 minggu terakhir?' 
   },
   {
     key: 'medicationUse',
-    prompt: 'Oke noted. Saat ini kamu sedang mengonsumsi obat apa pun? Ceritakan ya walau obat bebas.'
+    prompt: 'Oke noted. Kalau soal obat, lagi konsumsi obat apa pun sekarang? Ceritain aja walau obat bebas.'
   }
 ];
 
-const YES_VARIANTS = new Set(['y', 'ya', 'iya', 'yes', 'benar', 'betul', 'sudah', 'ok', 'oke']);
-const NO_VARIANTS = new Set(['n', 'no', 'tidak', 'tak', 'belum', 'bukan']);
+const YES_VARIANTS = new Set([
+  'y',
+  'ya',
+  'iya',
+  'iyaa',
+  'iyah',
+  'yes',
+  'yup',
+  'sip',
+  'siap',
+  'betul',
+  'benar',
+  'sudah',
+  'udah',
+  'ok',
+  'oke',
+  'okey',
+  'okeh'
+]);
+const NO_VARIANTS = new Set([
+  'n',
+  'no',
+  'nope',
+  'tidak',
+  'tdk',
+  'tak',
+  'ndak',
+  'ga',
+  'gak',
+  'enggak',
+  'engga',
+  'belum',
+  'bukan',
+  'tidak ada'
+]);
+const NO_CHANGE_PHRASES = [
+  'tidak ada yang perlu diperbaiki',
+  'tidak ada perubahan',
+  'tidak ada tambahan',
+  'tidak ada lagi',
+  'tidak ada yang ditambahkan',
+  'sudah cukup',
+  'cukup segitu',
+  'cukup gitu',
+  'itu saja',
+  'itu aja',
+  'udah segitu',
+  'udah begitu',
+  'udah gitu aja',
+  'sudah sesuai',
+  'sudah benar',
+  'sudah pas',
+  'semua sudah',
+  'ga ada tambahan',
+  'gak ada tambahan',
+  'nggak ada tambahan',
+  'enggak ada tambahan'
+];
 
 const normalizeReply = (text) => {
   if (!text || typeof text !== 'string') {
@@ -70,9 +126,30 @@ const normalizeReply = (text) => {
   }
   return text.trim().toLowerCase();
 };
+const containsVariant = (text, variants) => {
+  const normalized = normalizeReply(text);
+  if (!normalized) {
+    return false;
+  }
+  if (variants.has(normalized)) {
+    return true;
+  }
+  const tokens = normalized.split(/\s+/).filter(Boolean);
+  return tokens.some((token) => variants.has(token));
+};
 
-const isAffirmative = (text) => YES_VARIANTS.has(normalizeReply(text));
-const isNegative = (text) => NO_VARIANTS.has(normalizeReply(text));
+const isAffirmative = (text) => containsVariant(text, YES_VARIANTS);
+const isNegative = (text) => containsVariant(text, NO_VARIANTS);
+const isNoChangeResponse = (text) => {
+  const normalized = normalizeReply(text);
+  if (!normalized) {
+    return false;
+  }
+  if (containsVariant(normalized, NO_VARIANTS)) {
+    return true;
+  }
+  return NO_CHANGE_PHRASES.some((phrase) => normalized.includes(phrase));
+};
 
 const buildSummaryLines = (fields) => {
   const summary = [];
@@ -89,9 +166,9 @@ const buildSummaryLines = (fields) => {
 const buildSummaryMessage = (fields) => {
   const lines = buildSummaryLines(fields);
   if (lines.length === 0) {
-    return 'Aku sudah catat semuanya. Tolong cek kembali dan balas YA bila sudah benar, atau TIDAK kalau ada yang perlu direvisi ya.';
+    return 'Aku sudah catat cerita kamu sejauh ini. Kalau sudah pas, bilang aja “sudah beres” atau lanjut cerita kalau ada yang kurang.';
   }
-  return `Ringkasan gejala kamu: \n- ${lines.join('\n- ')}\nSudah sesuai belum? Balas YA jika sudah pas, atau TIDAK kalau ada yang ingin diperbaiki.`;
+  return `Ringkasan sementara versi aku:\n- ${lines.join('\n- ')}\nKalau sudah cocok, boleh bilang “sudah pas” atau “oke kok”. Kalau ada bagian yang mau diluruskan, tinggal ceritain aja ya.`;
 };
 
 module.exports = {
@@ -100,5 +177,6 @@ module.exports = {
   normalizeReply,
   isAffirmative,
   isNegative,
+  isNoChangeResponse,
   buildSummaryMessage
 };

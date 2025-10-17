@@ -7,6 +7,16 @@ const parseThresholds = (value) => {
   return parts.length > 0 ? parts : [0.4, 0.7];
 };
 
+const parseCsvList = (value) => {
+  if (!value || typeof value !== 'string') {
+    return [];
+  }
+  return value
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+};
+
 const config = {
   port: Number(process.env.APP_PORT) || 3000,
   nodeEnv: process.env.NODE_ENV || 'development',
@@ -24,7 +34,8 @@ const config = {
   acsChannelId: process.env.ACS_CHANNEL_ID || process.env.ACS_WHATSAPP_NUMBER || '',
   appInsightsConnectionString: process.env.APPINSIGHTS_CONNECTION_STRING || '',
   triageAlpha: Number(process.env.TRIAGE_ALPHA) || 0.6,
-  triageThresholds: parseThresholds(process.env.TRIAGE_THRESHOLDS || '0.4|0.7')
+  triageThresholds: parseThresholds(process.env.TRIAGE_THRESHOLDS || '0.4|0.7'),
+  storageCorsAllowedOrigins: parseCsvList(process.env.STORAGE_CORS_ALLOWED_ORIGINS || 'http://localhost:3000')
 };
 
 module.exports = config;

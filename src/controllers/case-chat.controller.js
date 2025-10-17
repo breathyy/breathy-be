@@ -8,7 +8,7 @@ const buildDownloadReference = (blobName) => {
   }
   try {
     return blobService.generateDownloadUrl(blobName);
-  } catch (error) {
+  } catch {
     return null;
   }
 };
@@ -122,35 +122,85 @@ const listCaseChat = async (req, res, next) => {
   }
 };
 
+
 const createPatientMessage = async (req, res, next) => {
   try {
     const { caseId } = req.params;
-    const { message } = req.body || {};
+    const body = req.body || {};
     const context = req.user || {};
     if (context.role !== 'PATIENT') {
       const error = new Error('Forbidden');
       error.status = 403;
       throw error;
     }
-    if (!message || typeof message !== 'string' || message.trim().length === 0) {
-      const error = new Error('Message is required');
-      error.status = 400;
-      throw error;
-    }
+
     const prisma = getPrisma();
     await assertCaseAccess({ prisma, caseId, userContext: context });
-    const payload = {
+
+    const typeValue = typeof body.type === 'string' ? body.type.trim().toLowerCase() : 'text';
+    const basePayload = {
       caseId,
       from: context.phoneNumber,
-      type: 'text',
-      text: {
-        body: message.trim(),
-        origin: 'WEB_PORTAL'
-      },
       messageId: `web-${Date.now()}-${Math.round(Math.random() * 100000)}`,
       timestamp: new Date().toISOString(),
       name: context.displayName || null
     };
+
+    let payload;
+
+    if (typeValue === 'image') {
+      if (!blobService.isConfigured()) {
+        const error = new Error('Media upload unavailable');
+        error.status = 503;
+        throw error;
+      }
+
+      const { blobName, caption, contentType, fileSizeBytes } = body;
+      if (!blobName || typeof blobName !== 'string' || blobName.trim().length === 0) {
+        const error = new Error('blobName is required');
+        error.status = 400;
+        throw error;
+      }
+
+      let resolvedSize = null;
+      if (fileSizeBytes !== undefined && fileSizeBytes !== null) {
+        const parsed = Number(fileSizeBytes);
+        if (Number.isNaN(parsed) || parsed < 0) {
+          const error = new Error('Invalid fileSizeBytes');
+          error.status = 400;
+          throw error;
+        }
+        resolvedSize = parsed;
+      }
+
+      payload = {
+        ...basePayload,
+        type: 'image',
+        media: {
+          blobName: blobName.trim(),
+          caption: typeof caption === 'string' && caption.trim().length > 0 ? caption.trim() : undefined,
+          contentType: typeof contentType === 'string' && contentType.trim().length > 0 ? contentType : undefined,
+          fileSize: resolvedSize === null ? undefined : resolvedSize
+        }
+      };
+    } else {
+      const message = typeof body.message === 'string' ? body.message.trim() : '';
+      if (!message) {
+        const error = new Error('Message is required');
+        error.status = 400;
+        throw error;
+      }
+
+      payload = {
+        ...basePayload,
+        type: 'text',
+        text: {
+          body: message,
+          origin: 'WEB_PORTAL'
+        }
+      };
+    }
+
     const result = await chatService.processIncomingMessage(payload);
     res.status(201).json({
       success: true,
@@ -165,7 +215,51 @@ const createPatientMessage = async (req, res, next) => {
   }
 };
 
+const requestPatientUploadUrl = async (req, res, next) => {
+  try {
+    const { caseId } = req.params;
+    const context = req.user || {};
+    if (context.role !== 'PATIENT') {
+      const error = new Error('Forbidden');
+      error.status = 403;
+      throw error;
+    }
+    if (!blobService.isConfigured()) {
+      const error = new Error('Media upload unavailable');
+      error.status = 503;
+      throw error;
+    }
+
+    const { contentType, fileSizeBytes } = req.body || {};
+    if (!contentType || typeof contentType !== 'string' || contentType.trim().length === 0) {
+      const error = new Error('contentType is required');
+      error.status = 400;
+      throw error;
+    }
+
+    let resolvedSize = null;
+    if (fileSizeBytes !== undefined && fileSizeBytes !== null) {
+      const parsed = Number(fileSizeBytes);
+      if (Number.isNaN(parsed) || parsed < 0) {
+        const error = new Error('Invalid fileSizeBytes');
+        error.status = 400;
+        throw error;
+      }
+      resolvedSize = parsed;
+    }
+
+    const prisma = getPrisma();
+    await assertCaseAccess({ prisma, caseId, userContext: context });
+
+    const upload = await blobService.createUploadUrl(caseId, contentType.trim(), resolvedSize === null ? undefined : resolvedSize);
+    res.status(200).json({ success: true, data: upload });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   listCaseChat,
-  createPatientMessage
+  createPatientMessage,
+  requestPatientUploadUrl
 };

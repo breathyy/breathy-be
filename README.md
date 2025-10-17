@@ -20,6 +20,9 @@ Salin `.env.example` menjadi `.env` lalu isi nilai sesuai kredensial Anda. Varia
 - `TRIAGE_ALPHA`
 - `TRIAGE_THRESHOLDS`
 - kredensial Azure (Storage, ACS, Cognitive Services)
+- `STORAGE_CORS_ALLOWED_ORIGINS` (origin frontend yang diizinkan, pisahkan dengan koma)
+
+Server akan mencoba mengatur aturan CORS Azure Blob sesuai nilai `STORAGE_CORS_ALLOWED_ORIGINS` saat pertama kali memastikan kontainer tersedia. Pastikan kredensial Storage minimal memiliki peran **Blob Service Contributor**.
 
 ## Menjalankan Server
 

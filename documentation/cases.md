@@ -133,13 +133,46 @@ Endpoints mounted at `/cases` handle case lifecycle (details, approval, chat, me
   ```
   Image messages include `media.download` (SAS URL) and processed `analysis` data when available.
 
+## `POST /cases/:caseId/chat/upload-url`
+- **Roles**: `PATIENT` (must own case).
+- **Purpose**: request a short-lived SAS URL to upload sputum images from the portal.
+- **Request Body**
+  ```json
+  {
+    "contentType": "image/jpeg",
+    "fileSizeBytes": 245123
+  }
+  ```
+- **Response** (`200 OK`)
+  ```json
+  {
+    "success": true,
+    "data": {
+      "uploadUrl": "https://storage...",
+      "blobName": "cases/5e8.../img-123.jpg",
+      "expiresAt": "2025-10-16T13:50:12.000Z"
+    }
+  }
+  ```
+  When storage is running in stub mode the `uploadUrl` can be `null` (the backend auto-imports the blob reference).
+
 ## `POST /cases/:caseId/chat`
 - **Roles**: `PATIENT` only (must match session `caseId`).
-- **Purpose**: send a portal-originated text message that triggers chatbot processing.
+- **Purpose**: send portal-originated text or media messages that trigger chatbot processing.
 - **Request Body**
   ```json
   {
     "message": "Sekarang suhu badanku 37.8 derajat..."
+  }
+  ```
+- **Media Payload**
+  ```json
+  {
+    "type": "image",
+    "blobName": "cases/5e8.../img-123.jpg",
+    "caption": "Dahak terbaru",
+    "contentType": "image/jpeg",
+    "fileSizeBytes": 245123
   }
   ```
 - **Response** (`201 Created`)

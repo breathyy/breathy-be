@@ -68,7 +68,7 @@ const buildDownloadReference = (blobName) => {
   }
   try {
     return blobService.generateDownloadUrl(blobName);
-  } catch (error) {
+  } catch {
     return null;
   }
 };
@@ -91,7 +91,7 @@ const analyseVision = async ({ blobName, markers, downloadUrl }) => {
       markers,
       downloadUrl
     });
-  } catch (error) {
+  } catch {
     visionResult = {
       markers,
       severityImageScore: null,
@@ -148,7 +148,7 @@ const registerImage = async ({
     if (properties.contentLength !== null && properties.contentLength !== undefined) {
       detectedSize = properties.contentLength;
     }
-  } catch (error) {
+  } catch {
     // ignore missing blob metadata
   }
 

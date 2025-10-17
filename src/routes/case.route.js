@@ -13,6 +13,11 @@ router.get(
 	authMiddleware.requireRole('DOCTOR', 'HOSPITAL', 'PATIENT'),
 	caseChatController.listCaseChat
 );
+router.post(
+	'/:caseId/chat/upload-url',
+	authMiddleware.requireRole('PATIENT'),
+	caseChatController.requestPatientUploadUrl
+);
 router.post('/:caseId/chat', authMiddleware.requireRole('PATIENT'), caseChatController.createPatientMessage);
 
 router.get('/:caseId', authMiddleware.requireRole('DOCTOR', 'HOSPITAL'), caseController.getCaseDetail);

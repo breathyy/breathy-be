@@ -1,4 +1,5 @@
 const REQUIRED_SYMPTOM_FIELDS = ['feverStatus', 'onsetDays', 'dyspnea', 'comorbidity'];
+const MAX_AUDIT_LOG_LENGTH = 40;
 
 const cloneMetadata = (metadata) => {
   if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
@@ -55,6 +56,42 @@ const buildDataCompleteness = (metadata, timestamp) => {
 const applyDataCompleteness = (metadata, timestamp) => {
   const cloned = cloneMetadata(metadata);
   cloned.dataCompleteness = buildDataCompleteness(cloned, timestamp);
+  return cloned;
+};
+
+const normalizeAuditEntry = (entry) => {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+  const { from, to, actorType, actorId, reason, details } = entry;
+  const at = entry.at || new Date().toISOString();
+  const normalized = {
+    at,
+    from: typeof from === 'string' ? from : from || null,
+    to: typeof to === 'string' ? to : to || null,
+    actor: {
+      type: typeof actorType === 'string' ? actorType.toUpperCase() : 'SYSTEM',
+      id: actorId || null
+    },
+    reason: typeof reason === 'string' ? reason : null,
+    details: details && typeof details === 'object' ? details : {}
+  };
+  return normalized;
+};
+
+const appendStatusTransition = (metadata, entry) => {
+  const normalizedEntry = normalizeAuditEntry(entry);
+  if (!normalizedEntry) {
+    return cloneMetadata(metadata);
+  }
+  const cloned = cloneMetadata(metadata);
+  const log = Array.isArray(cloned.statusAuditLog) ? cloned.statusAuditLog.slice() : [];
+  log.push(normalizedEntry);
+  if (log.length > MAX_AUDIT_LOG_LENGTH) {
+    log.splice(0, log.length - MAX_AUDIT_LOG_LENGTH);
+  }
+  cloned.statusAuditLog = log;
+  cloned.lastStatusTransition = normalizedEntry;
   return cloned;
 };
 
@@ -157,5 +194,6 @@ module.exports = {
   clampConfidence,
   mergeSymptomExtraction,
   mergeVisionAnalysis,
-  applyDataCompleteness
+  applyDataCompleteness,
+  appendStatusTransition
 };

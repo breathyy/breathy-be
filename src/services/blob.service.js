@@ -17,6 +17,19 @@ let blobServiceClient;
 let containerClient;
 let sharedKeyCredential;
 let containerReady = false;
+let corsReady = false;
+
+const corsRequiredMethods = ['GET', 'PUT', 'HEAD', 'OPTIONS'];
+
+const parseCsv = (value) => {
+  if (!value || typeof value !== 'string') {
+    return [];
+  }
+  return value
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+};
 
 const parseConnectionString = (value) => {
   return value.split(';').reduce((acc, segment) => {
@@ -59,6 +72,75 @@ const getContainerClient = () => {
   return containerClient;
 };
 
+const getCorsOrigins = () => {
+  if (!Array.isArray(config.storageCorsAllowedOrigins)) {
+    return [];
+  }
+  return config.storageCorsAllowedOrigins.filter((origin) => origin && origin.length > 0);
+};
+
+const ensureCorsRules = async () => {
+  if (stubMode || corsReady) {
+    return;
+  }
+  const origins = getCorsOrigins();
+  if (origins.length === 0) {
+    corsReady = true;
+    return;
+  }
+  const serviceClient = getBlobServiceClient();
+  const properties = await serviceClient.getProperties();
+  const corsRules = Array.isArray(properties.cors) ? properties.cors : [];
+  const targetOrigins = origins.join(',');
+
+  const existingRule = corsRules.find((rule) => {
+    const ruleOrigins = parseCsv(rule.allowedOrigins || '*');
+    const ruleMethods = parseCsv(rule.allowedMethods || '');
+    const ruleMethodsSet = new Set(ruleMethods.map((method) => method.toUpperCase()));
+    const hasOrigins = ruleOrigins.includes('*') || origins.every((origin) => ruleOrigins.includes(origin));
+    const hasMethods = corsRequiredMethods.every((method) => ruleMethodsSet.has(method));
+    return hasOrigins && hasMethods;
+  });
+
+  if (!existingRule) {
+    const updatedRules = [...corsRules, {
+      allowedOrigins: targetOrigins,
+      allowedMethods: corsRequiredMethods.join(','),
+      allowedHeaders: '*',
+      exposedHeaders: '*',
+      maxAgeInSeconds: 300
+    }];
+    await serviceClient.setProperties({ cors: updatedRules });
+    corsReady = true;
+    return;
+  }
+
+  const headersOk = existingRule.allowedHeaders === '*' || parseCsv(existingRule.allowedHeaders || '').includes('*');
+  const exposedOk = existingRule.exposedHeaders === '*' || parseCsv(existingRule.exposedHeaders || '').includes('*');
+  const maxAge = typeof existingRule.maxAgeInSeconds === 'number' ? existingRule.maxAgeInSeconds : 0;
+
+  if (headersOk && exposedOk && maxAge >= 300) {
+    corsReady = true;
+    return;
+  }
+
+  const updatedRules = corsRules.map((rule) => {
+    if (rule !== existingRule) {
+      return rule;
+    }
+    return {
+      allowedOrigins: rule.allowedOrigins || targetOrigins,
+      allowedMethods: rule.allowedMethods || corsRequiredMethods.join(','),
+      allowedHeaders: '*',
+      exposedHeaders: '*',
+      maxAgeInSeconds: Math.max(maxAge, 300)
+    };
+  });
+
+  await serviceClient.setProperties({ cors: updatedRules });
+  corsReady = true;
+};
+
 const ensureContainer = async () => {
   if (stubMode) {
     containerReady = true;
@@ -69,6 +151,7 @@ const ensureContainer = async () => {
   }
   const client = getContainerClient();
   await client.createIfNotExists();
+  await ensureCorsRules();
   containerReady = true;
 };
 

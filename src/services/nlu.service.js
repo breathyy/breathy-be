@@ -43,6 +43,13 @@ const heuristicsExtract = (text) => {
     rationales.feverStatus = 'Keyword indicates fever >=38°C.';
     heuristicsSignals.push('keyword:fever');
   }
+  const SYMPTOM_LABELS = {
+    feverStatus: 'demam tinggi',
+    onsetDays: 'durasi batuk',
+    dyspnea: 'keluhan sesak napas',
+    comorbidity: 'riwayat komorbiditas'
+  };
+
 
   const coughPattern =
     normalized.match(/batuk(?:\s+selama)?\s+(\d{1,2})\s*(hari|day|days)/) ||
@@ -171,7 +178,8 @@ const ensureFieldDefaults = (fields) => {
   return result;
 };
 
-const extractSymptoms = async (text) => {
+const extractSymptoms = async (text, options = {}) => {
+  const { context } = options;
   if (!text || typeof text !== 'string') {
     return {
       fields: ensureFieldDefaults({}),
@@ -189,6 +197,7 @@ const extractSymptoms = async (text) => {
   }
 
   const heuristics = heuristicsExtract(text);
+  const contextSummary = summarizeContext(context);
   let fields = { ...heuristics.fields };
   let confidences = { ...heuristics.confidences };
   let rationales = { ...heuristics.rationales };
@@ -203,27 +212,49 @@ const extractSymptoms = async (text) => {
       recommendImage: heuristics.recommendImage
     }
   };
+  if (contextSummary) {
+    raw.context = contextSummary;
+  }
 
   if (config.openAiKey) {
     try {
       const client = getClient();
+      const baseSystemPrompt =
+        'You are Breathy, a warm Indonesian virtual respiratory triage companion. Interpret patient stories (including slang or mixed languages) and extract structured respiratory triage data. Respond ONLY with JSON matching {"symptoms":{"feverStatus":{"value":boolean|null,"confidence":0-1,"rationale?":string},"onsetDays":{"value":number|null,"confidence":0-1,"rationale?":string},"dyspnea":{"value":boolean|null,"confidence":0-1,"rationale?":string},"comorbidity":{"value":boolean|null,"confidence":0-1,"rationale?":string}},"missingFields":string[],"recommendImage":boolean,"notes"?:string[]}. When unsure, set value null and include the field in missingFields. Use Bahasa Indonesia for notes and suggest gentle follow-up questions.';
+      const messages = [{ role: 'system', content: baseSystemPrompt }];
+      if (contextSummary) {
+' +
+
+        });
+        const contextLines = [];
+        if (contextSummary.knownStatements.length > 0) {
+          contextLines.push(`Informasi yang sudah tercatat: ${contextSummary.knownStatements.join('; ')}.`);
+        }
+        if (contextSummary.missingLabels.length > 0) {
+          contextLines.push(`Prioritaskan melengkapi: ${contextSummary.missingLabels.join(', ')}.`);
+        }
+        if (contextSummary.awaitingClarification) {
+          contextLines.push('Ringkasan sebelumnya sedang menunggu klarifikasi pasien.');
+        }
+        const contextInstruction = `Gunakan konteks percakapan sejauh ini. Jika cerita baru berbeda dengan catatan lama, utamakan pesan terbaru pasien.${
+          contextLines.length > 0 ? `\n${contextLines.join('\n')}` : ''
+        }`;
+        messages.push({
+          role: 'system',
+          content: contextInstruction
+        });
+      }
+      messages.push({
+        role: 'user',
+        content: `Pesan pasien terbaru (gunakan bahasa aslinya):\n${text}`
+      });
+
       const completion = await client.chat.completions.create({
         model: config.openAiModel || 'gpt-4o-mini',
         temperature: 0,
         max_tokens: 600,
-        messages: [
-          {
-            role: 'system',
-            content:
-              'You are a medical triage assistant. Read the patient text and respond ONLY with JSON matching {"symptoms":{"feverStatus":{"value":boolean|null,"confidence":0-1,"rationale?":string},"onsetDays":{"value":number|null,"confidence":0-1,"rationale?":string},"dyspnea":{"value":boolean|null,"confidence":0-1,"rationale?":string},"comorbidity":{"value":boolean|null,"confidence":0-1,"rationale?":string}},"missingFields":string[],"recommendImage":boolean,"notes"?:string[]}. Interpret fever as >=38°C. Use null when data is absent. If a field is missing, add it to missingFields and include suggested follow-up questions in notes. Set recommendImage to true when a sputum/throat image should be requested (even if optional).'
-          },
-          {
-            role: 'user',
-            content: `Patient description: ${text}`
-          }
-        ]
+        messages
       });
-
       const rawContent = completion?.choices?.[0]?.message?.content || '';
       const parsed = parseJsonBlock(rawContent);
       if (parsed) {

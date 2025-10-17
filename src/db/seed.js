@@ -71,6 +71,19 @@ const hospitalOperatorAccounts = [
   }
 ];
 
+const patientAccounts = [
+  {
+    phoneNumber: '+628111000201',
+    displayName: 'Budi Pasien',
+    password: 'PatientPass123!'
+  },
+  {
+    phoneNumber: '+628111000202',
+    displayName: 'Siti Pasien',
+    password: 'PatientPass123!'
+  }
+];
+
 const upsertHospital = async (prisma, hospital) => {
   const existing = await prisma.hospitals.findFirst({ where: { name: hospital.name } });
   if (existing) {
@@ -169,12 +182,28 @@ const seedHospitalOperators = async (prisma) => {
   }
 };
 
+const seedPatients = async (prisma) => {
+  for (const patient of patientAccounts) {
+    const user = await upsertUser(prisma, patient);
+    const passwordHash = await hashPassword(patient.password);
+    await prisma.patient_credentials.upsert({
+      where: { user_id: user.id },
+      update: { password_hash: passwordHash },
+      create: {
+        user_id: user.id,
+        password_hash: passwordHash
+      }
+    });
+  }
+};
+
 const run = async () => {
   const prisma = getPrisma();
   try {
     await seedHospitals(prisma);
     await seedDoctors(prisma);
     await seedHospitalOperators(prisma);
+    await seedPatients(prisma);
     console.log('Seed completed');
   } catch (error) {
     console.error('Seed failed:', error.message);

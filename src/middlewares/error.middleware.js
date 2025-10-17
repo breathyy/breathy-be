@@ -5,7 +5,7 @@ const errorMiddleware = (error, req, res, next) => {
   const status = error.status || 500;
   const path = req.originalUrl ? req.originalUrl.split('?')[0] : 'unknown';
   const payload = {
-    error: error.message || 'Internal Server Error'
+    error: status >= 500 ? 'Internal Server Error' : (error.message || 'Error')
   };
   if (status >= 500) {
     console.error(error);

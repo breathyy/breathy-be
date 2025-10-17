@@ -214,7 +214,7 @@ const listCases = async (req, res, next) => {
       ]);
       statusSummary = convertGroupToMap(statusGroups, 'status');
       severitySummary = convertGroupToMap(severityGroups, 'severity_class');
-    } catch (groupError) {
+    } catch {
       const fallback = caseRecords.map((record) => ({
         status: record.status,
         severity_class: record.severity_class

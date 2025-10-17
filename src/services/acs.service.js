@@ -195,7 +195,7 @@ const downloadMedia = async ({ mediaUrl }) => {
     error.status = response.status;
     try {
       error.body = await response.text();
-    } catch (parseError) {
+    } catch {
       error.body = null;
     }
     throw error;

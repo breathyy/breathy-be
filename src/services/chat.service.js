@@ -9,8 +9,10 @@ const {
   buildSummaryMessage,
   isAffirmative,
   isNegative,
+  isNoChangeResponse,
   normalizeReply
 } = require('../utils/questionnaire');
+const { appendStatusTransition } = require('../utils/triage-metadata');
 
 const { normalizePhone } = acsService;
 
@@ -61,13 +63,22 @@ const ensureActiveCase = async (prisma, userId, options = {}) => {
   if (existing) {
     return existing;
   }
-  return prisma.cases.create({
+  const initialMetadata = appendStatusTransition({}, {
+    from: null,
+    to: 'IN_CHATBOT',
+    actorType: 'SYSTEM',
+    actorId: null,
+    reason: 'CASE_CREATED'
+  });
+  const created = await prisma.cases.create({
     data: {
       user_id: userId,
       status: 'IN_CHATBOT',
-      triage_metadata: {}
+      triage_metadata: initialMetadata
     }
   });
+  created.__wasCreated = true;
+  return created;
 };
 
 const createChatMessage = async (prisma, caseId, messageType, content, blobRef, meta) => {
@@ -281,9 +292,51 @@ const handleQuestionnaireProgress = async ({
   const phoneNumber = user ? user.phone_number : null;
   const now = new Date();
   const nowIso = now.toISOString();
-  const missingFields = Array.isArray(analysis?.missingFields) ? analysis.missingFields : [];
+  const metadataMissing =
+    metadata?.dataCompleteness && Array.isArray(metadata.dataCompleteness.missingSymptoms)
+      ? metadata.dataCompleteness.missingSymptoms
+      : [];
+  const analysisMissing = Array.isArray(analysis?.missingFields) ? analysis.missingFields : [];
+  const missingFields = metadataMissing.length > 0 ? metadataMissing : analysisMissing;
+  const awaitingClarification = Boolean(questionnaire.awaitingClarification);
 
   let metadataChanged = false;
+
+  const finalizeCase = async (confirmationText) => {
+    questionnaire.awaitingConfirmation = false;
+    questionnaire.awaitingClarification = false;
+    questionnaire.patientConfirmation = {
+      at: nowIso,
+      text: confirmationText
+    };
+    metadataChanged = true;
+    metadataCopy.questionnaire = questionnaire;
+    const updatedCase = await prisma.cases.update({
+      where: { id: caseId },
+      data: {
+        status: 'WAITING_DOCTOR',
+        triage_metadata: metadataCopy,
+        updated_at: now
+      }
+    });
+    await sendMessage({
+      caseId,
+      phoneNumber,
+      message:
+        'Terima kasih, data kamu sudah lengkap. Dokter akan meninjau kasusmu dan kami kabari lagi untuk langkah selanjutnya ya.',
+      metadata: { reason: 'CONFIRMED_ESCALATION' }
+    });
+    return {
+      updatedCase,
+      triageMetadata: updatedCase.triage_metadata
+    };
+  };
+
+  if (awaitingClarification && typeof latestText === 'string') {
+    if (isNoChangeResponse(latestText) && missingFields.length === 0) {
+      return finalizeCase(latestText);
+    }
+  }
 
   if (caseRecord.status !== 'WAITING_DOCTOR') {
     if (missingFields.length > 0) {
@@ -296,10 +349,12 @@ const handleQuestionnaireProgress = async ({
           metadata: { reason: 'ASK_MANDATORY', field: pendingField }
         });
         questionnaire.asked[pendingField] = nowIso;
+        questionnaire.awaitingClarification = false;
         metadataChanged = true;
       }
       if (questionnaire.awaitingConfirmation) {
         questionnaire.awaitingConfirmation = false;
+        questionnaire.awaitingClarification = false;
         metadataChanged = true;
       }
     } else {
@@ -312,6 +367,7 @@ const handleQuestionnaireProgress = async ({
           metadata: { reason: 'ASK_OPTIONAL', topic: pendingOptional.key }
         });
         questionnaire.optionalAsked[pendingOptional.key] = nowIso;
+        questionnaire.awaitingClarification = false;
         metadataCopy.questionnaire = questionnaire;
         const updatedCase = await prisma.cases.update({
           where: { id: caseId },
@@ -334,6 +390,7 @@ const handleQuestionnaireProgress = async ({
           metadata: { reason: 'SUMMARY_CONFIRMATION' }
         });
         questionnaire.awaitingConfirmation = true;
+        questionnaire.awaitingClarification = false;
         questionnaire.summarySentAt = nowIso;
         questionnaire.summarySnapshot = {
           fields: analysis?.fields || {},
@@ -346,35 +403,11 @@ const handleQuestionnaireProgress = async ({
     if (questionnaire.awaitingConfirmation && typeof latestText === 'string') {
       const normalized = normalizeReply(latestText);
       if (isAffirmative(normalized)) {
-        questionnaire.awaitingConfirmation = false;
-        questionnaire.patientConfirmation = {
-          at: nowIso,
-          text: latestText
-        };
-        metadataChanged = true;
-        metadataCopy.questionnaire = questionnaire;
-        const updatedCase = await prisma.cases.update({
-          where: { id: caseId },
-          data: {
-            status: 'WAITING_DOCTOR',
-            triage_metadata: metadataCopy,
-            updated_at: now
-          }
-        });
-        await sendMessage({
-          caseId,
-          phoneNumber,
-          message:
-            'Terima kasih, data Anda sudah lengkap. Dokter akan meninjau kasus Anda dan kami akan menghubungi Anda jika ada instruksi lanjutan.',
-          metadata: { reason: 'CONFIRMED_ESCALATION' }
-        });
-        return {
-          updatedCase,
-          triageMetadata: updatedCase.triage_metadata
-        };
+        return finalizeCase(latestText);
       }
       if (isNegative(normalized)) {
         questionnaire.awaitingConfirmation = false;
+        questionnaire.awaitingClarification = true;
         questionnaire.confirmationDeclinedAt = nowIso;
         metadataChanged = true;
         await sendMessage({
@@ -440,7 +473,12 @@ const processIncomingMessage = async (payload) => {
   }
   if (messageType === 'text' && content) {
     try {
-      const nluResult = await nluService.evaluateText({ caseId: activeCase.id, text: content, prisma });
+      const nluResult = await nluService.evaluateText({
+        caseId: activeCase.id,
+        text: content,
+        prisma,
+        context: triageMetadataSnapshot
+      });
       meta.nlu = {
         severitySymptom: nluResult.severitySymptom,
         fields: nluResult.analysis ? nluResult.analysis.fields : undefined,

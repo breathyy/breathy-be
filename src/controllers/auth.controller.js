@@ -1,6 +1,26 @@
 const otpService = require('../services/otp.service');
 const authService = require('../services/auth.service');
 
+const registerPatient = async (req, res, next) => {
+  try {
+    const { phone, password, displayName } = req.body || {};
+    const result = await authService.registerPatient({ phone, password, displayName });
+    res.status(201).json({ success: true, data: result });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const loginPatient = async (req, res, next) => {
+  try {
+    const { phone, password } = req.body || {};
+    const result = await authService.loginPatient({ phone, password });
+    res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    next(error);
+  }
+};
+
 const requestPatientOtp = async (req, res, next) => {
   try {
     const { phone, dryRun } = req.body || {};
@@ -48,6 +68,8 @@ const getCurrentProfile = async (req, res, next) => {
 };
 
 module.exports = {
+  registerPatient,
+  loginPatient,
   requestPatientOtp,
   verifyPatientOtp,
   loginProvider,

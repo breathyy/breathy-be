@@ -2,6 +2,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const config = require('../config/env.config');
 const { getPrisma } = require('../config/prisma.config');
+const { normalizePhone, ensureActiveCase } = require('./chat.service');
 
 const SALT_ROUNDS = 12;
 
@@ -119,6 +120,114 @@ const assertPasswordHash = (record) => {
   }
 };
 
+const fetchPatientWithCredentials = async (prisma, phoneNumber) => {
+  return prisma.users.findUnique({
+    where: { phone_number: phoneNumber },
+    include: { patient_credentials: true }
+  });
+};
+
+const registerPatient = async ({ phone, password, displayName }) => {
+  const normalizedPhone = normalizePhone(phone);
+  if (!normalizedPhone) {
+    throw createError(400, 'Nomor WhatsApp tidak valid');
+  }
+  if (!password || String(password).trim().length === 0) {
+    throw createError(400, 'Password wajib diisi');
+  }
+  const sanitizedPassword = String(password).trim();
+  const sanitizedName = displayName && String(displayName).trim().length > 0 ? String(displayName).trim() : null;
+  const prisma = getPrisma();
+
+  const result = await prisma.$transaction(async (tx) => {
+    const existing = await fetchPatientWithCredentials(tx, normalizedPhone);
+    if (existing && existing.patient_credentials) {
+      throw createError(409, 'Nomor WhatsApp sudah terdaftar');
+    }
+    const passwordHash = await hashPassword(sanitizedPassword);
+    let userRecord;
+    if (existing) {
+      userRecord = await tx.users.update({
+        where: { id: existing.id },
+        data: {
+          display_name: sanitizedName || existing.display_name,
+          is_verified: true
+        }
+      });
+    } else {
+      userRecord = await tx.users.create({
+        data: {
+          phone_number: normalizedPhone,
+          display_name: sanitizedName,
+          is_verified: true
+        }
+      });
+    }
+
+    await tx.patient_credentials.upsert({
+      where: { user_id: userRecord.id },
+      update: { password_hash: passwordHash },
+      create: {
+        user_id: userRecord.id,
+        password_hash: passwordHash
+      }
+    });
+
+    const activeCase = await ensureActiveCase(tx, userRecord.id);
+    const session = signPatientSession({
+      userId: userRecord.id,
+      phoneNumber: normalizedPhone,
+      caseId: activeCase.id,
+      displayName: userRecord.display_name
+    });
+
+    return {
+      userId: userRecord.id,
+      caseId: activeCase.id,
+      caseStatus: activeCase.status,
+      token: session.token,
+      expiresIn: session.expiresIn
+    };
+  });
+
+  return result;
+};
+
+const loginPatient = async ({ phone, password }) => {
+  const normalizedPhone = normalizePhone(phone);
+  if (!normalizedPhone) {
+    throw createError(400, 'Nomor WhatsApp tidak valid');
+  }
+  if (!password || String(password).trim().length === 0) {
+    throw createError(400, 'Password wajib diisi');
+  }
+  const prisma = getPrisma();
+  const existing = await fetchPatientWithCredentials(prisma, normalizedPhone);
+  if (!existing || !existing.patient_credentials) {
+    throw createError(401, 'Kredensial tidak valid');
+  }
+  const passwordMatch = await bcrypt.compare(String(password), existing.patient_credentials.password_hash);
+  if (!passwordMatch) {
+    throw createError(401, 'Kredensial tidak valid');
+  }
+
+  const activeCase = await ensureActiveCase(prisma, existing.id);
+  const session = signPatientSession({
+    userId: existing.id,
+    phoneNumber: normalizedPhone,
+    caseId: activeCase.id,
+    displayName: existing.display_name
+  });
+
+  return {
+    userId: existing.id,
+    caseId: activeCase.id,
+    caseStatus: activeCase.status,
+    token: session.token,
+    expiresIn: session.expiresIn
+  };
+};
+
 const loginProvider = async ({ email, password, role }) => {
   const normalizedEmail = normalizeEmail(email);
   if (!normalizedEmail) {
@@ -178,6 +287,8 @@ const hashPassword = async (password) => {
 };
 
 module.exports = {
+  registerPatient,
+  loginPatient,
   loginProvider,
   getCurrentProfile,
   hashPassword,
