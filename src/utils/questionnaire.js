@@ -2,7 +2,7 @@ const REQUIRED_FIELDS = {
   feverStatus: {
     label: 'demam tinggi',
     prompt:
-      'Hai, aku Breathy — teman ngobrol kamu soal pernapasan. Ceritain ya, belakangan ini ada demam tinggi (sekitar ≥38°C) atau badan berasa panas berulang?',
+      'Hai, aku Breathy! asisten kesehatan ISPA berbasis AI kamu. Boleh cerita, belakangan ini ada demam tinggi (sekitar ≥38°C) atau badan berasa panas berulang?',
     summary: (value) => {
       if (value === true) {
         return 'Demam tinggi terkonfirmasi';

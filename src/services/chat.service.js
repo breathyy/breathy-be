@@ -8,6 +8,10 @@ const { appendStatusTransition, applyDataCompleteness } = require('../utils/tria
 const { normalizePhone } = acsService;
 
 const activeStatuses = ['IN_CHATBOT', 'WAITING_DOCTOR'];
+const WELCOME_MESSAGE = 'Hai, aku Breathy! asisten kesehatan ISPA berbasis AI kamu. Ada yang bisa aku bantu soal pernapasanmu?';
+const IMAGE_REQUEST_MESSAGE =
+  'Oke, supaya dokter bisa menilai lebih tepat, boleh bantu kirim foto dahak atau tenggorokan kamu? Kalau belum bisa atau belum nyaman, tinggal bilang ya.';
+const IMAGE_REQUEST_COOLDOWN_MS = 4 * 60 * 60 * 1000; // 4 jam penundaan sebelum minta ulang
 
 const ensureUser = async (prisma, phoneNumber, displayName) => {
   const normalizedPhone = normalizePhone(phoneNumber);
@@ -271,6 +275,8 @@ const applyConversationOutcome = async ({
   const phoneNumber = user ? user.phone_number : null;
   let updatedCase = caseRecord;
   let updatedMetadata = triageMetadata;
+  let metadataDirty = false;
+  let metadataPersisted = false;
 
   const sendIfPossible = async (message, metadata = {}) => {
     if (!phoneNumber || !message) {
@@ -292,12 +298,91 @@ const applyConversationOutcome = async ({
     updatedMetadata && updatedMetadata.conversation && typeof updatedMetadata.conversation === 'object'
       ? { ...updatedMetadata.conversation }
       : {};
+  const originalRecommendImage = Object.prototype.hasOwnProperty.call(conversationMeta, 'recommendImage')
+    ? conversationMeta.recommendImage
+    : undefined;
+  const existingImageRequest =
+    conversationMeta.imageRequest && typeof conversationMeta.imageRequest === 'object'
+      ? { ...conversationMeta.imageRequest }
+      : null;
+  const imageStats =
+    updatedMetadata && updatedMetadata.imageStats && typeof updatedMetadata.imageStats === 'object'
+      ? updatedMetadata.imageStats
+      : null;
+  const dataCompleteness =
+    updatedMetadata && updatedMetadata.dataCompleteness && typeof updatedMetadata.dataCompleteness === 'object'
+      ? updatedMetadata.dataCompleteness
+      : null;
+  const imageProvided = Boolean(dataCompleteness && dataCompleteness.imageProvided) || Boolean(imageStats && imageStats.total > 0);
+  const now = new Date();
+  const nowIso = now.toISOString();
+
+  if (conversation.recommendImage === false) {
+    if (!existingImageRequest || existingImageRequest.status !== 'DECLINED') {
+      const declined = {
+        status: 'DECLINED',
+        updatedAt: nowIso
+      };
+      if (existingImageRequest && existingImageRequest.requestedAt) {
+        declined.requestedAt = existingImageRequest.requestedAt;
+      }
+      conversationMeta.imageRequest = declined;
+      metadataDirty = true;
+    }
+    conversationMeta.recommendImage = false;
+  } else if (conversation.recommendImage === true && !imageProvided) {
+    const lastRequestedAt = existingImageRequest && existingImageRequest.requestedAt
+      ? new Date(existingImageRequest.requestedAt)
+      : null;
+    const cooldownActive =
+      lastRequestedAt && now.getTime() - lastRequestedAt.getTime() < IMAGE_REQUEST_COOLDOWN_MS;
+    if (!cooldownActive) {
+      await sendIfPossible(IMAGE_REQUEST_MESSAGE, {
+        reason: 'REQUEST_IMAGE',
+        uiVariant: 'IMAGE_REQUEST',
+        brand: 'breathy'
+      });
+      conversationMeta.imageRequest = {
+        status: 'REQUESTED',
+        requestedAt: nowIso,
+        updatedAt: nowIso
+      };
+      metadataDirty = true;
+    }
+    conversationMeta.recommendImage = true;
+  } else if (imageProvided && (!existingImageRequest || existingImageRequest.status !== 'FULFILLED')) {
+    const fulfilled = {
+      status: 'FULFILLED',
+      updatedAt: nowIso,
+      fulfilledAt: nowIso
+    };
+    if (existingImageRequest && existingImageRequest.requestedAt) {
+      fulfilled.requestedAt = existingImageRequest.requestedAt;
+    }
+    conversationMeta.imageRequest = fulfilled;
+    metadataDirty = true;
+    conversationMeta.recommendImage = false;
+  }
+
+  const recommendValue = Object.prototype.hasOwnProperty.call(conversationMeta, 'recommendImage')
+    ? conversationMeta.recommendImage
+    : undefined;
+  if (recommendValue !== originalRecommendImage) {
+    metadataDirty = true;
+  }
+
+  if (metadataDirty) {
+    updatedMetadata = {
+      ...updatedMetadata,
+      conversation: {
+        ...conversationMeta
+      }
+    };
+  }
 
   const alreadyEscalated = Boolean(conversationMeta.escalatedAt) || caseRecord.status === 'WAITING_DOCTOR';
 
   if (conversation.shouldEscalate && !alreadyEscalated) {
-    const now = new Date();
-    const nowIso = now.toISOString();
     const metadataWithEscalation = {
       ...updatedMetadata,
       conversation: {
@@ -325,11 +410,27 @@ const applyConversationOutcome = async ({
       }
     });
     updatedMetadata = metadataWithAudit;
+    metadataDirty = false;
+    metadataPersisted = true;
 
     await sendIfPossible(
-      'Terima kasih, data kamu sudah lengkap. Dokter Breathy sedang meninjau kasusmu sekarang. Estimasi: 30 menit.',
-      { reason: 'ESCALATE_TO_DOCTOR' }
+      'Terima kasih, data kamu sudah lengkap. ✨ Dokter Breathy lagi meninjau kasus kamu sekarang. Tunggu sebentar ya, kami kabari begitu ada update.',
+      { reason: 'ESCALATE_TO_DOCTOR', uiVariant: 'WAITING_DOCTOR_ALERT', brand: 'breathy' }
     );
+  }
+
+  if (metadataDirty && !metadataPersisted) {
+    const refreshTime = new Date();
+    const refreshIso = refreshTime.toISOString();
+    const recalculatedMetadata = applyDataCompleteness(updatedMetadata, refreshIso);
+    updatedCase = await prisma.cases.update({
+      where: { id: caseId },
+      data: {
+        triage_metadata: recalculatedMetadata,
+        updated_at: refreshTime
+      }
+    });
+    updatedMetadata = recalculatedMetadata;
   }
 
   return {
@@ -344,6 +445,14 @@ const processIncomingMessage = async (payload) => {
   const messageType = type === 'image' ? 'image' : 'text';
   const user = await ensureUser(prisma, from, name);
   let activeCase = await ensureActiveCase(prisma, user.id, targetCaseId ? { caseId: targetCaseId } : {});
+  if (activeCase.__wasCreated) {
+    await sendPatientText({
+      caseId: activeCase.id,
+      phoneNumber: user.phone_number,
+      message: WELCOME_MESSAGE,
+      metadata: { reason: 'WELCOME', uiVariant: 'BREATHY_WELCOME', brand: 'breathy' }
+    });
+  }
   let triageMetadataSnapshot = activeCase.triage_metadata || {};
   let content = null;
   let blobRef = null;

@@ -117,7 +117,10 @@ const ensureConversationState = (metadataConversation) => {
     allowSmallTalk: base.allowSmallTalk !== undefined ? Boolean(base.allowSmallTalk) : true,
     summary: base.summary || null,
     planContext: base.planContext || null,
-    doctorReview: base.doctorReview || null
+    doctorReview: base.doctorReview || null,
+    recommendImage: typeof base.recommendImage === 'boolean' ? base.recommendImage : true,
+    imageRequest:
+      base.imageRequest && typeof base.imageRequest === 'object' ? { ...base.imageRequest } : null
   };
 };
 
@@ -161,8 +164,18 @@ const summarizeContext = (metadata) => {
   const summary = {
     knownStatements: [],
     missingLabels: [],
-    awaitingClarification: Boolean(metadata?.questionnaire?.awaitingClarification)
+    awaitingClarification: Boolean(metadata?.questionnaire?.awaitingClarification),
+    imageProvided: Boolean(metadata?.dataCompleteness?.imageProvided)
   };
+  const imageRequestMeta =
+    metadata &&
+    metadata.conversation &&
+    typeof metadata.conversation === 'object' &&
+    metadata.conversation.imageRequest &&
+    typeof metadata.conversation.imageRequest === 'object'
+      ? metadata.conversation.imageRequest
+      : null;
+  summary.imageRequestStatus = imageRequestMeta && typeof imageRequestMeta.status === 'string' ? imageRequestMeta.status : null;
 
   const lastExtraction = metadata.lastSymptomExtraction;
   if (lastExtraction && typeof lastExtraction === 'object' && lastExtraction.fields) {
@@ -523,6 +536,8 @@ const extractSymptoms = async (text, options = {}) => {
   const conversationState = ensureConversationState(existingConversationState);
   const contextSummary = summarizeContext(context);
   const taskSnapshot = serializeTaskState(conversationState.tasks);
+  const persistedRecommendImage =
+    typeof conversationState.recommendImage === 'boolean' ? conversationState.recommendImage : undefined;
   let conversationExtras = {
     replyMessage: null,
     taskStatus: JSON.parse(JSON.stringify(taskSnapshot)),
@@ -531,7 +546,7 @@ const extractSymptoms = async (text, options = {}) => {
     allowSmallTalk: true,
     planContext: null,
     notes: [],
-    recommendImage: true
+    recommendImage: persistedRecommendImage !== undefined ? persistedRecommendImage : true
   };
   let fields = {};
   let confidences = {};
@@ -548,7 +563,7 @@ const extractSymptoms = async (text, options = {}) => {
   try {
     const client = getClient();
     const baseSystemPrompt =
-      'You are Breathy, a warm Indonesian virtual respiratory triage companion. Jaga percakapan alami namun tetap pastikan empat data wajib terkumpul: demam tinggi, durasi batuk, sesak napas, dan komorbiditas. Output harus berupa JSON valid tanpa penjelasan di luar JSON. Struktur wajib: {"reply":string,"symptoms":{...},"taskStatus":{field:{"status":string,"prompt?":string,"latestAnswer?":string,"value?":any}},"confirmation":{"state":"NONE|REQUEST|CONFIRMED|REVISE","summary?":string},"recommendImage":boolean,"notes"?:string[],"planContext"?:object}. Balas dalam Bahasa Indonesia yang empatik.';
+      'You are Breathy, a warm Indonesian virtual respiratory triage companion. Jaga percakapan alami namun tetap pastikan empat data wajib terkumpul: demam tinggi, durasi batuk, sesak napas, dan komorbiditas. Ingatkan pasien dengan sopan tentang pentingnya foto dahak/tenggorokan jika belum ada, tetapi hormati bila pasien menolak dan set recommendImage ke false. Output harus berupa JSON valid tanpa penjelasan di luar JSON. Struktur wajib: {"reply":string,"symptoms":{...},"taskStatus":{field:{"status":string,"prompt?":string,"latestAnswer?":string,"value?":any}},"confirmation":{"state":"NONE|REQUEST|CONFIRMED|REVISE","summary?":string},"recommendImage":boolean,"notes"?:string[],"planContext"?:object}. Balas dalam Bahasa Indonesia yang empatik.';
     const systemTaskPrompt = `Status pengumpulan data saat ini:\n${buildTaskContextLines(conversationState.tasks)}\nSelalu hormati preferensi pengguna. Jika pasien ingin bercerita lebih panjang, tanggapi dulu lalu arahkan pelan-pelan ke pertanyaan wajib.`;
     const taskDefinitionPrompt = `Definisi tugas wajib:\n${JSON.stringify(TASK_DEFINITIONS)}`;
     const metadataPrompt = `Snapshot tugas JSON:\n${JSON.stringify(taskSnapshot)}`;
@@ -568,6 +583,15 @@ const extractSymptoms = async (text, options = {}) => {
       }
       if (contextSummary.awaitingClarification) {
         contextLines.push('Ringkasan sebelumnya menunggu klarifikasi pasien.');
+      }
+      if (contextSummary.imageProvided) {
+        contextLines.push('Foto dahak/tenggorokan sudah diterima. Jangan minta ulang kecuali pasien sendiri yang menawarkan.');
+      } else if (contextSummary.imageRequestStatus === 'DECLINED') {
+        contextLines.push('Pasien menyampaikan belum bisa atau tidak nyaman mengirim foto. Hargai keputusan mereka dan set recommendImage menjadi false.');
+      } else if (contextSummary.imageRequestStatus === 'REQUESTED') {
+        contextLines.push('Kamu sudah meminta foto dahak/tenggorokan sebelumnya. Ingatkan dengan empati tanpa memaksa, dan beri kesempatan pasien menolak bila perlu.');
+      } else {
+        contextLines.push('Belum ada foto dahak/tenggorokan. Ingatkan secara halus bahwa foto membantu dokter, tapi selalu sertakan opsi sopan jika pasien menolak.');
       }
       if (contextLines.length > 0) {
         messages.push({ role: 'system', content: contextLines.join('\n') });

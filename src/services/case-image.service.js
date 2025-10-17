@@ -1,6 +1,6 @@
 const blobService = require('./blob.service');
 const visionService = require('./vision.service');
-const { mergeVisionAnalysis } = require('../utils/triage-metadata');
+const { mergeVisionAnalysis, applyDataCompleteness } = require('../utils/triage-metadata');
 const { toNullableDecimal, toNullableNumber, toBigIntOrNull } = require('../utils/prisma-helpers');
 
 const requireStorageConfigured = () => {
@@ -230,8 +230,37 @@ const registerImage = async ({
     { imageCount }
   );
 
+  let metadataForUpdate = mergedMetadata;
+  const conversationMeta =
+    metadataForUpdate && metadataForUpdate.conversation && typeof metadataForUpdate.conversation === 'object'
+      ? { ...metadataForUpdate.conversation }
+      : {};
+  const existingImageRequest =
+    conversationMeta.imageRequest && typeof conversationMeta.imageRequest === 'object'
+      ? conversationMeta.imageRequest
+      : null;
+  const fulfilledAt = new Date().toISOString();
+  if (!existingImageRequest || existingImageRequest.status !== 'FULFILLED') {
+    const fulfillment = {
+      status: 'FULFILLED',
+      fulfilledAt,
+      updatedAt: fulfilledAt
+    };
+    if (existingImageRequest && existingImageRequest.requestedAt) {
+      fulfillment.requestedAt = existingImageRequest.requestedAt;
+    }
+    conversationMeta.imageRequest = fulfillment;
+    metadataForUpdate = {
+      ...metadataForUpdate,
+      conversation: {
+        ...conversationMeta
+      }
+    };
+    metadataForUpdate = applyDataCompleteness(metadataForUpdate, fulfilledAt);
+  }
+
   const caseUpdate = {
-    triage_metadata: mergedMetadata,
+    triage_metadata: metadataForUpdate,
     updated_at: new Date()
   };
 
