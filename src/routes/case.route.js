@@ -25,7 +25,7 @@ router.post(
 	authMiddleware.requireRole('PATIENT'),
 	caseChatController.resetPatientConversation
 );
-router.get('/:caseId', authMiddleware.requireRole('DOCTOR', 'HOSPITAL'), caseController.getCaseDetail);
+router.get('/:caseId', authMiddleware.requireRole('DOCTOR', 'HOSPITAL', 'PATIENT'), caseController.getCaseDetail);
 router.post('/:caseId/approve', authMiddleware.requireRole('DOCTOR'), caseController.approveCase);
 router.post('/:caseId/images/upload-url', authMiddleware.requireRole('DOCTOR', 'HOSPITAL'), caseImageController.requestUploadUrl);
 router.post('/:caseId/images', authMiddleware.requireRole('DOCTOR', 'HOSPITAL'), caseImageController.registerImage);

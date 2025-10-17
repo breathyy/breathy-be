@@ -169,9 +169,17 @@ const getCaseDetail = async (req, res, next) => {
         throw createError(400, 'caseId is required');
     }
     const prisma = getPrisma();
-      const record = await fetchCaseDetail(prisma, normalizedId);
+    const actor = req.user || {};
+    const record = await fetchCaseDetail(prisma, normalizedId);
     if (!record) {
         throw createError(404, 'Case not found');
+    }
+    const actorRole = actor.role ? String(actor.role).toUpperCase() : null;
+    if (actorRole === 'PATIENT') {
+      const actorId = actor.id || actor.userId || null;
+      if (!actorId || String(record.user_id) !== String(actorId)) {
+        throw createError(403, 'Forbidden');
+      }
     }
     res.status(200).json({ success: true, data: mapCaseDetail(record) });
   } catch (error) {
